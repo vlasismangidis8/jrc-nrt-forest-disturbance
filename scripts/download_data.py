@@ -128,7 +128,7 @@ class Throttle:
                 return
             self._resume_at = now + STALL_COOLDOWN
             log(
-                f"server not responding ({type(error).__name__}): all workers pause "
+                f"server not responding ({brief(error)}): all workers pause "
                 f"{STALL_COOLDOWN:g} s (stall {self._stalls}/{MAX_STALLS})"
             )
 
@@ -136,12 +136,41 @@ class Throttle:
 THROTTLE = Throttle()
 
 
+def brief(error: Exception) -> str:
+    """The informative tail of a requests/urllib3 error message, for one log line."""
+    text = str(error)
+    cut = text.find("Caused by")
+    return f"{type(error).__name__}: {text[cut:] if cut >= 0 else text}"[:140]
+
+
+def is_timeout(error: Exception) -> bool:
+    """True when the server stayed silent; False when the connection was dropped.
+
+    The two need opposite reactions. Silence means the server is stuck, so all
+    workers back off. A dropped keep-alive connection is routine (Apache closes
+    idle ones after 5 s) and only needs a fresh connection.
+    """
+    return isinstance(error, requests.Timeout) or "timed out" in str(error).lower()
+
+
+def on_connection_error(error: Exception, drops: int) -> int:
+    """React to a failed request; returns the updated count of consecutive drops."""
+    if is_timeout(error) or drops >= 3:
+        THROTTLE.stalled(error)
+        return 0
+    s = getattr(_local, "session", None)
+    if s is not None:
+        s.close()  # the pooled connection is dead; the next request opens a new one
+    time.sleep(1.0 + drops)
+    return drops + 1
+
+
 def session() -> requests.Session:
     """One keep-alive session per thread (connection reuse matters on this server)."""
     s = getattr(_local, "session", None)
     if s is None:
         s = requests.Session()
-        # read=0: a read timeout surfaces at once, so the shared Throttle handles it.
+        # read=0: read errors surface at once and are sorted by on_connection_error().
         retry = Retry(
             total=3,
             read=0,
@@ -157,12 +186,13 @@ def session() -> requests.Session:
 
 def http_get(url: str) -> requests.Response:
     """GET a small resource through the shared throttle, waiting out server stalls."""
+    drops = 0
     while True:
         THROTTLE.wait()
         try:
             r = session().get(url, timeout=TIMEOUT)
         except (requests.Timeout, requests.ConnectionError) as e:
-            THROTTLE.stalled(e)
+            drops = on_connection_error(e, drops)
             continue
         r.raise_for_status()
         THROTTLE.success()
@@ -188,6 +218,7 @@ def fetch(url: str, dest: Path, attempts: int = 4) -> tuple[str, int]:
     tmp = dest.with_name(dest.name + ".part")
     last_error: Exception | None = None
     errors = 0  # stalls are not counted here: Throttle bounds them globally
+    drops = 0
     while errors < attempts:
         THROTTLE.wait()
         try:
@@ -210,7 +241,7 @@ def fetch(url: str, dest: Path, attempts: int = 4) -> tuple[str, int]:
             return "downloaded", n
         except (requests.Timeout, requests.ConnectionError) as e:
             tmp.unlink(missing_ok=True)
-            THROTTLE.stalled(e)
+            drops = on_connection_error(e, drops)
         except (requests.RequestException, OSError) as e:
             last_error = e
             errors += 1

@@ -2,12 +2,14 @@
 
 import importlib.util
 import json
+import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+import requests
 
 _SPEC = importlib.util.spec_from_file_location(
     "download_data", Path(__file__).resolve().parents[1] / "scripts" / "download_data.py"
@@ -19,9 +21,14 @@ PAYLOAD = b"x" * 1000
 
 
 class Handler(BaseHTTPRequestHandler):
-    """Serves PAYLOAD for any path; the first `stall_first` requests hang instead."""
+    """Serves PAYLOAD for any path.
+
+    The first `stall_first` requests hang; the first `drop_first` requests get the
+    connection closed without any response.
+    """
 
     stall_first = 0
+    drop_first = 0
     seen = 0
     lock = threading.Lock()
 
@@ -29,7 +36,12 @@ class Handler(BaseHTTPRequestHandler):
         with Handler.lock:
             Handler.seen += 1
             stall = Handler.seen <= Handler.stall_first
+            drop = Handler.seen <= Handler.drop_first
         try:
+            if drop:
+                self.close_connection = True
+                self.connection.shutdown(socket.SHUT_RDWR)
+                return
             if stall:
                 time.sleep(2.0)  # longer than the patched read timeout
             if self.path.endswith("/missing"):
@@ -50,6 +62,7 @@ class Handler(BaseHTTPRequestHandler):
 def server(monkeypatch):
     Handler.seen = 0
     Handler.stall_first = 0
+    Handler.drop_first = 0
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     monkeypatch.setattr(dd, "TIMEOUT", (2, 0.5))
@@ -104,6 +117,25 @@ def test_fetch_gives_up_when_the_server_stays_silent(server, tmp_path):
     assert dd.THROTTLE.aborted
     assert not dest.exists()
     assert not list(tmp_path.rglob("*.part"))
+
+
+def test_dropped_connection_is_retried_without_a_cool_down(server, tmp_path, monkeypatch):
+    monkeypatch.setattr(dd, "STALL_COOLDOWN", 600)  # a cool-down here would hang the test
+    Handler.drop_first = 2
+    assert dd.fetch(f"{server}/f", tmp_path / "0.0.0") == ("downloaded", 1000)
+    assert Handler.seen == 3
+    assert dd.THROTTLE._resume_at == 0.0
+
+
+def test_timeouts_and_dropped_connections_are_told_apart():
+    silent = (
+        'Max retries exceeded (Caused by ReadTimeoutError("Read timed out. (read timeout=90)"))'
+    )
+    dropped = "('Connection aborted.', RemoteDisconnected('Remote end closed connection'))"
+    assert dd.is_timeout(requests.ReadTimeout("anything"))
+    assert dd.is_timeout(requests.ConnectionError(silent))
+    assert not dd.is_timeout(requests.ConnectionError(dropped))
+    assert dd.brief(requests.ConnectionError(silent)).startswith("ConnectionError: Caused by Read")
 
 
 def test_http_error_is_a_failure_not_a_stall(server, tmp_path, monkeypatch):
