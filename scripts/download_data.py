@@ -14,8 +14,15 @@ Examples (from the repo root):
 
 Resumability: every file is written to "<name>.part" and renamed once its size
 matches Content-Length, so an existing file is always complete and is skipped.
-A finished cube is flagged in data/manifests/ and skipped without any request.
-Failures are appended to data/download_failures.txt and the exit code is 1.
+A cube is flagged complete in data/manifests/ only when every listed file is on
+disk; a complete cube is skipped without any request.
+
+Server stalls: the JRC server sometimes accepts connections and then stays
+silent for minutes. All workers then pause together and retry; after
+MAX_STALLS silent cool-downs in a row the run stops with exit code 2.
+
+Exit codes: 0 all done, 1 some files failed (see data/download_failures.txt),
+2 stopped early because the server is unresponsive. Re-run to resume.
 """
 
 from __future__ import annotations
@@ -43,7 +50,9 @@ from urllib3.util.retry import Retry
 truststore.inject_into_ssl()
 
 REPO = Path(__file__).resolve().parents[1]
-TIMEOUT = (30, 300)  # connect, read (the server can take ~30 s to send the first byte)
+TIMEOUT = (20, 90)  # connect, read (the server can take ~45 s to send the first byte)
+STALL_COOLDOWN = 120  # seconds every worker pauses after a timeout or dropped connection
+MAX_STALLS = 10  # consecutive cool-downs without one successful download before giving up
 UNITS = {"": 1, "K": 1024, "M": 1024**2, "G": 1024**3}
 # One row of an Apache "Index of" table: href, then size ("540", "26K", "1.4M") or "-" for folders.
 INDEX_ROW = re.compile(
@@ -61,13 +70,67 @@ def log(msg: str) -> None:
         print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
+class ServerUnresponsive(RuntimeError):
+    """The server stayed silent through MAX_STALLS cool-downs; the run stops early."""
+
+
+class Throttle:
+    """Shared back-off for all worker threads.
+
+    The JRC server sometimes accepts connections but sends nothing for minutes.
+    When one worker sees a timeout, every worker pauses for STALL_COOLDOWN
+    instead of piling more requests onto a server that is not answering.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._resume_at = 0.0
+        self._stalls = 0
+        self.aborted = False
+
+    def wait(self) -> None:
+        while True:
+            if self.aborted:
+                raise ServerUnresponsive("server unresponsive, run stopped early")
+            delay = self._resume_at - time.time()
+            if delay <= 0:
+                return
+            time.sleep(min(delay, 5.0))
+
+    def success(self) -> None:
+        self._stalls = 0
+
+    def stalled(self, error: Exception) -> None:
+        with self._lock:
+            now = time.time()
+            if now < self._resume_at or self.aborted:
+                return  # another worker already started this cool-down
+            self._stalls += 1
+            if self._stalls > MAX_STALLS:
+                self.aborted = True
+                log(
+                    f"server silent through {MAX_STALLS} cool-downs: stopping. Re-run later to resume."
+                )
+                return
+            self._resume_at = now + STALL_COOLDOWN
+            log(
+                f"server not responding ({type(error).__name__}): all workers pause "
+                f"{STALL_COOLDOWN} s (stall {self._stalls}/{MAX_STALLS})"
+            )
+
+
+THROTTLE = Throttle()
+
+
 def session() -> requests.Session:
     """One keep-alive session per thread (connection reuse matters on this server)."""
     s = getattr(_local, "session", None)
     if s is None:
         s = requests.Session()
+        # read=0: a read timeout surfaces at once, so the shared Throttle handles it.
         retry = Retry(
-            total=6,
+            total=3,
+            read=0,
             backoff_factor=1.5,
             status_forcelist=(429, 500, 502, 503, 504),
             allowed_methods=("GET",),
@@ -97,7 +160,9 @@ def fetch(url: str, dest: Path, attempts: int = 4) -> tuple[str, int]:
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_name(dest.name + ".part")
     last_error: Exception | None = None
-    for attempt in range(attempts):
+    errors = 0  # stalls are not counted here: Throttle bounds them globally
+    while errors < attempts:
+        THROTTLE.wait()
         try:
             with session().get(url, stream=True, timeout=TIMEOUT) as r:
                 r.raise_for_status()
@@ -114,11 +179,16 @@ def fetch(url: str, dest: Path, attempts: int = 4) -> tuple[str, int]:
                 ):
                     raise OSError(f"size mismatch: got {n} bytes, expected {expected}")
             os.replace(tmp, dest)
+            THROTTLE.success()
             return "downloaded", n
+        except (requests.Timeout, requests.ConnectionError) as e:
+            tmp.unlink(missing_ok=True)
+            THROTTLE.stalled(e)
         except (requests.RequestException, OSError) as e:
             last_error = e
+            errors += 1
             tmp.unlink(missing_ok=True)
-            time.sleep(2.0 * (attempt + 1))
+            time.sleep(2.0 * errors)
     raise RuntimeError(f"{url}: {last_error}")
 
 
@@ -137,6 +207,8 @@ def run_tasks(
                 status, n = fut.result()
                 total_bytes += n
                 n_new += status == "downloaded"
+            except ServerUnresponsive:
+                pass  # reported once by main(); these files are simply not fetched yet
             except Exception as e:  # noqa: BLE001 - recorded and reported, run continues
                 failures.append(str(e))
             now = time.time()
@@ -153,6 +225,22 @@ def run_tasks(
 
 def n_expected_chunks(zarray: dict) -> int:
     return math.prod(math.ceil(s / c) for s, c in zip(zarray["shape"], zarray["chunks"]))
+
+
+def select_metadata(meta: dict, arrays: list[str]) -> dict:
+    """Consolidated-metadata entries of the root, the groups and the given arrays only.
+
+    Keys look like ".zgroup" (root), "r10m/.zattrs" (group) or "r10m/B04/.zarray"
+    (array). Dropping the entries of arrays that are not mirrored means a band
+    subset can never be opened as arrays that silently read back as fill values.
+    """
+    groups = {a.rsplit("/", 1)[0] for a in arrays if "/" in a}
+
+    def keep(key: str) -> bool:
+        parent = key.rsplit("/", 1)[0] if "/" in key else ""
+        return parent == "" or parent in arrays or parent in groups
+
+    return {k: v for k, v in meta.items() if keep(k)}
 
 
 def plan_cube(
@@ -189,21 +277,11 @@ def plan_cube(
     with ThreadPoolExecutor(max_workers=workers) as pool:
         listed = dict(pool.map(list_array, arrays))
 
-    # Keep only metadata of the arrays we mirror, so a band subset can never be
-    # read back as silently fill-valued arrays through the consolidated metadata.
-    # Keys look like ".zgroup" (root), "r10m/.zattrs" (group) or "r10m/B04/.zarray" (array).
-    groups = {a.rsplit("/", 1)[0] for a in arrays if "/" in a}
-
-    def keep(key: str) -> bool:
-        parent = key.rsplit("/", 1)[0] if "/" in key else ""
-        return parent == "" or parent in arrays or parent in groups
-
-    kept_meta = {k: v for k, v in meta.items() if keep(k)}
     manifest = {
         "psu": psu,
         "bands": bands,
         "store": store_rel,
-        "zmetadata": {**zmeta, "metadata": kept_meta},
+        "zmetadata": {**zmeta, "metadata": select_metadata(meta, arrays)},
         "arrays": {
             a: {"expected_chunks": n_expected_chunks(meta[f"{a}/.zarray"]), "files": listed[a]}
             for a in arrays
@@ -242,13 +320,16 @@ def download_cube(base: str, data_dir: Path, manifest: dict, workers: int) -> tu
         for name in info["files"]
     ]
     nbytes, n_new, failures = run_tasks(tasks, workers, f"PSU {psu:07d}")
-    if not failures:
+    # "Complete" is decided by what is on disk, never by the absence of error reports.
+    n_missing = sum(not dest.exists() for _, dest in tasks)
+    if n_missing == 0:
         manifest["complete"] = True
         manifest["bytes"] = nbytes
         path = data_dir / "manifests" / f"PSU_{psu:07d}.json"
         path.write_text(json.dumps(manifest), encoding="utf-8")
     log(
-        f"PSU {psu:07d}: {len(tasks)} files, {nbytes / 1e9:.2f} GB on disk, {n_new} new, {len(failures)} failed"
+        f"PSU {psu:07d}: {len(tasks)} files, {nbytes / 1e9:.2f} GB on disk, {n_new} new, "
+        f"{n_missing} still missing, {len(failures)} failed"
     )
     return nbytes, failures
 
@@ -276,7 +357,7 @@ def main() -> int:
         default=None,
         help="subset of cube arrays, e.g. B04 B08 SCL (default: all)",
     )
-    ap.add_argument("--workers", type=int, default=8, help="parallel connections (default 8)")
+    ap.add_argument("--workers", type=int, default=4, help="parallel connections (default 4)")
     ap.add_argument("--data-dir", type=Path, default=REPO / "data")
     ap.add_argument("--config", type=Path, default=REPO / "config" / "challenge.yaml")
     ap.add_argument(
@@ -319,6 +400,8 @@ def main() -> int:
     if "cubes" in args.what:
         total = 0.0
         for psu in psus:
+            if THROTTLE.aborted:
+                break
             try:
                 manifest = plan_cube(base, cfg, data_dir, psu, bands, args.workers)
             except Exception as e:  # noqa: BLE001 - keep going with the other PSUs
@@ -353,6 +436,10 @@ def main() -> int:
         with open(fail_path, "a", encoding="utf-8") as f:
             f.write(f"# {time.strftime('%Y-%m-%d %H:%M:%S')}\n" + "\n".join(failures) + "\n")
         log(f"{len(failures)} failure(s), see {fail_path}. Re-run the same command to retry.")
+    if THROTTLE.aborted:
+        log("stopped early: the server is not responding. Re-run the same command to resume.")
+        return 2
+    if failures:
         return 1
     log("done, no failures")
     return 0
