@@ -15,11 +15,14 @@ Examples (from the repo root):
 Resumability: every file is written to "<name>.part" and renamed once its size
 matches Content-Length, so an existing file is always complete and is skipped.
 A cube is flagged complete in data/manifests/ only when every listed file is on
-disk; a complete cube is skipped without any request.
+disk; a complete cube is skipped without any request. The Zarr metadata of a
+cube is written at that moment, so an incomplete cube cannot be opened.
 
 Server stalls: the JRC server sometimes accepts connections and then stays
 silent for minutes. All workers then pause together and retry; after
-MAX_STALLS silent cool-downs in a row the run stops with exit code 2.
+--max-stalls silent cool-downs in a row the run stops with exit code 2.
+For a gentle unattended run:
+  --workers 1 --max-rate 5 --stall-cooldown 300 --max-stalls 100
 
 Exit codes: 0 all done, 1 some files failed (see data/download_failures.txt),
 2 stopped early because the server is unresponsive. Re-run to resume.
@@ -80,22 +83,33 @@ class Throttle:
     The JRC server sometimes accepts connections but sends nothing for minutes.
     When one worker sees a timeout, every worker pauses for STALL_COOLDOWN
     instead of piling more requests onto a server that is not answering.
+    `max_rate` caps the number of requests per second across all workers.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, max_rate: float | None = None) -> None:
         self._lock = threading.Lock()
         self._resume_at = 0.0
+        self._next_slot = 0.0
         self._stalls = 0
+        self.max_rate = max_rate
         self.aborted = False
 
     def wait(self) -> None:
+        """Block until this thread may send one request."""
         while True:
             if self.aborted:
                 raise ServerUnresponsive("server unresponsive, run stopped early")
             delay = self._resume_at - time.time()
             if delay <= 0:
-                return
+                break
             time.sleep(min(delay, 5.0))
+        if self.max_rate:
+            with self._lock:
+                now = time.time()
+                slot = max(self._next_slot, now)
+                self._next_slot = slot + 1.0 / self.max_rate
+            if slot > now:
+                time.sleep(slot - now)
 
     def success(self) -> None:
         self._stalls = 0
@@ -115,7 +129,7 @@ class Throttle:
             self._resume_at = now + STALL_COOLDOWN
             log(
                 f"server not responding ({type(error).__name__}): all workers pause "
-                f"{STALL_COOLDOWN} s (stall {self._stalls}/{MAX_STALLS})"
+                f"{STALL_COOLDOWN:g} s (stall {self._stalls}/{MAX_STALLS})"
             )
 
 
@@ -141,10 +155,23 @@ def session() -> requests.Session:
     return s
 
 
+def http_get(url: str) -> requests.Response:
+    """GET a small resource through the shared throttle, waiting out server stalls."""
+    while True:
+        THROTTLE.wait()
+        try:
+            r = session().get(url, timeout=TIMEOUT)
+        except (requests.Timeout, requests.ConnectionError) as e:
+            THROTTLE.stalled(e)
+            continue
+        r.raise_for_status()
+        THROTTLE.success()
+        return r
+
+
 def list_dir(url: str) -> list[tuple[str, bool, float]]:
     """Parse an Apache directory index into (name, is_dir, approximate_size_bytes)."""
-    r = session().get(url, timeout=TIMEOUT)
-    r.raise_for_status()
+    r = http_get(url)
     entries = []
     for href, num, unit in INDEX_ROW.findall(r.text):
         name = html.unescape(href)
@@ -243,21 +270,46 @@ def select_metadata(meta: dict, arrays: list[str]) -> dict:
     return {k: v for k, v in meta.items() if keep(k)}
 
 
+def finish_manifest(manifest: dict) -> dict:
+    manifest["approx_bytes"] = sum(sum(v["files"].values()) for v in manifest["arrays"].values())
+    manifest["n_files"] = sum(len(v["files"]) for v in manifest["arrays"].values())
+    return manifest
+
+
+def subset_manifest(manifest: dict, bands: list[str]) -> dict:
+    """Restrict a cached listing to `bands` (plus coordinates) without asking the server."""
+    names = set(bands) | COORD_ARRAYS
+    arrays = {a: v for a, v in manifest["arrays"].items() if a.split("/")[-1] in names}
+    zmeta = manifest["zmetadata"]
+    return finish_manifest(
+        {
+            "psu": manifest["psu"],
+            "bands": bands,
+            "store": manifest["store"],
+            "zmetadata": {**zmeta, "metadata": select_metadata(zmeta["metadata"], list(arrays))},
+            "arrays": arrays,
+            "complete": False,
+        }
+    )
+
+
 def plan_cube(
     base: str, cfg: dict, data_dir: Path, psu: int, bands: list[str] | None, workers: int
 ) -> dict:
     """List every chunk file of one PSU cube. The plan is cached in data/manifests/."""
     manifest_path = data_dir / "manifests" / f"PSU_{psu:07d}.json"
     if manifest_path.exists():
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if manifest.get("bands") == bands:
-            return manifest
+        cached = json.loads(manifest_path.read_text(encoding="utf-8"))
+        have = cached.get("bands")
+        covers = have is None or (bands is not None and set(bands) <= set(have))
+        if have == bands or (covers and cached.get("complete")):
+            return cached  # same selection, or a finished mirror that already contains it
+        if covers:
+            return subset_manifest(cached, bands)
 
     store_rel = cfg["remote"]["s2_cube"].format(psu=psu)
     store_url = f"{base}{store_rel}/"
-    r = session().get(store_url + ".zmetadata", timeout=TIMEOUT)
-    r.raise_for_status()
-    zmeta = r.json()
+    zmeta = http_get(store_url + ".zmetadata").json()
     meta = zmeta["metadata"]
     arrays = sorted(k[: -len("/.zarray")] for k in meta if k.endswith("/.zarray"))
     if bands is not None:
@@ -277,19 +329,19 @@ def plan_cube(
     with ThreadPoolExecutor(max_workers=workers) as pool:
         listed = dict(pool.map(list_array, arrays))
 
-    manifest = {
-        "psu": psu,
-        "bands": bands,
-        "store": store_rel,
-        "zmetadata": {**zmeta, "metadata": select_metadata(meta, arrays)},
-        "arrays": {
-            a: {"expected_chunks": n_expected_chunks(meta[f"{a}/.zarray"]), "files": listed[a]}
-            for a in arrays
-        },
-        "complete": False,
-    }
-    manifest["approx_bytes"] = sum(sum(v["files"].values()) for v in manifest["arrays"].values())
-    manifest["n_files"] = sum(len(v["files"]) for v in manifest["arrays"].values())
+    manifest = finish_manifest(
+        {
+            "psu": psu,
+            "bands": bands,
+            "store": store_rel,
+            "zmetadata": {**zmeta, "metadata": select_metadata(meta, arrays)},
+            "arrays": {
+                a: {"expected_chunks": n_expected_chunks(meta[f"{a}/.zarray"]), "files": listed[a]}
+                for a in arrays
+            },
+            "complete": False,
+        }
+    )
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     return manifest
@@ -313,7 +365,6 @@ def download_cube(base: str, data_dir: Path, manifest: dict, workers: int) -> tu
     psu = manifest["psu"]
     store_dir = data_dir / Path(manifest["store"]).relative_to("data")
     store_url = f"{base}{manifest['store']}/"
-    write_cube_metadata(store_dir, manifest)
     tasks = [
         (f"{store_url}{array}/{name}", store_dir / array / name)
         for array, info in manifest["arrays"].items()
@@ -323,6 +374,9 @@ def download_cube(base: str, data_dir: Path, manifest: dict, workers: int) -> tu
     # "Complete" is decided by what is on disk, never by the absence of error reports.
     n_missing = sum(not dest.exists() for _, dest in tasks)
     if n_missing == 0:
+        # The Zarr metadata is written last: a store with missing chunks stays
+        # unopenable instead of reading back fill values where data should be.
+        write_cube_metadata(store_dir, manifest)
         manifest["complete"] = True
         manifest["bytes"] = nbytes
         path = data_dir / "manifests" / f"PSU_{psu:07d}.json"
@@ -344,6 +398,7 @@ def resolve_psus(arg: list[str], cfg: dict, base: str) -> list[int]:
 
 
 def main() -> int:
+    global STALL_COOLDOWN, MAX_STALLS
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -358,12 +413,30 @@ def main() -> int:
         help="subset of cube arrays, e.g. B04 B08 SCL (default: all)",
     )
     ap.add_argument("--workers", type=int, default=4, help="parallel connections (default 4)")
+    ap.add_argument(
+        "--max-rate", type=float, default=None, help="cap on requests per second, all workers"
+    )
+    ap.add_argument(
+        "--stall-cooldown",
+        type=float,
+        default=STALL_COOLDOWN,
+        help=f"seconds to pause when the server stops answering (default {STALL_COOLDOWN})",
+    )
+    ap.add_argument(
+        "--max-stalls",
+        type=int,
+        default=MAX_STALLS,
+        help=f"silent cool-downs in a row before stopping (default {MAX_STALLS})",
+    )
     ap.add_argument("--data-dir", type=Path, default=REPO / "data")
     ap.add_argument("--config", type=Path, default=REPO / "config" / "challenge.yaml")
     ap.add_argument(
         "--dry-run", action="store_true", help="list cubes and report approximate sizes only"
     )
     args = ap.parse_args()
+
+    STALL_COOLDOWN, MAX_STALLS = args.stall_cooldown, args.max_stalls
+    THROTTLE.max_rate = args.max_rate
 
     cfg = yaml.safe_load(args.config.read_text(encoding="utf-8"))
     base = cfg["base_url"]

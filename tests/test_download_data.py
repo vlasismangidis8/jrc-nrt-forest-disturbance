@@ -134,6 +134,69 @@ def test_cube_is_not_complete_after_the_server_went_silent(server, tmp_path):
     assert dd.THROTTLE.aborted
     assert not manifest["complete"]
     assert not (tmp_path / "manifests" / "PSU_0000001.json").exists()
+    # no Zarr metadata, so the incomplete store cannot be opened by mistake
+    assert not list(tmp_path.rglob(".z*"))
+
+
+def test_max_rate_spaces_requests(server, tmp_path):
+    dd.THROTTLE.max_rate = 20.0
+    t0 = time.time()
+    for i in range(5):
+        dd.fetch(f"{server}/f", tmp_path / str(i))
+    assert time.time() - t0 >= 0.18  # 4 gaps of 1/20 s
+
+
+def full_manifest():
+    return dd.finish_manifest(
+        {
+            "psu": 1,
+            "bands": None,
+            "store": "data/sentinel2/PSU_0000001.zarr",
+            "zmetadata": {
+                "zarr_consolidated_format": 1,
+                "metadata": {
+                    ".zgroup": {},
+                    "r10m/.zgroup": {},
+                    "r10m/B02/.zarray": {},
+                    "r10m/B04/.zarray": {},
+                    "r10m/time/.zarray": {},
+                },
+            },
+            "arrays": {
+                "r10m/B02": {"expected_chunks": 1, "files": {"0.0.0": 10.0}},
+                "r10m/B04": {"expected_chunks": 2, "files": {"0.0.0": 10.0, "0.0.1": 20.0}},
+                "r10m/time": {"expected_chunks": 1, "files": {"0": 1.0}},
+            },
+            "complete": False,
+        }
+    )
+
+
+def test_subset_manifest_keeps_requested_bands_and_coordinates():
+    sub = dd.subset_manifest(full_manifest(), ["B04"])
+    assert list(sub["arrays"]) == ["r10m/B04", "r10m/time"]
+    assert (sub["n_files"], sub["approx_bytes"]) == (3, 31.0)
+    assert "r10m/B02/.zarray" not in sub["zmetadata"]["metadata"]
+    assert sub["bands"] == ["B04"] and not sub["complete"]
+
+
+def test_plan_reuses_a_cached_listing_without_network(tmp_path, monkeypatch):
+    def no_network(url):
+        raise AssertionError(f"unexpected request: {url}")
+
+    monkeypatch.setattr(dd, "http_get", no_network)
+    (tmp_path / "manifests").mkdir()
+    path = tmp_path / "manifests" / "PSU_0000001.json"
+    cfg = {"remote": {"s2_cube": "data/sentinel2/PSU_{psu:07d}.zarr"}}
+
+    path.write_text(json.dumps(full_manifest()))
+    assert dd.plan_cube("http://x/", cfg, tmp_path, 1, None, 1)["bands"] is None
+    sub = dd.plan_cube("http://x/", cfg, tmp_path, 1, ["B04"], 1)
+    assert list(sub["arrays"]) == ["r10m/B04", "r10m/time"]
+
+    # a finished full mirror already contains every subset
+    path.write_text(json.dumps({**full_manifest(), "complete": True}))
+    assert dd.plan_cube("http://x/", cfg, tmp_path, 1, ["B04"], 1)["bands"] is None
 
 
 def test_index_rows_are_parsed_and_navigation_links_ignored():
