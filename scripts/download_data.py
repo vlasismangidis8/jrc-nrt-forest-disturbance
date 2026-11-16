@@ -1,0 +1,362 @@
+#!/usr/bin/env python3
+"""Resumable mirror of the JRC NRT challenge data into data/.
+
+Mirrors, 1:1 with the JRC FTP layout:
+  aux    PSU boundaries, demo PSU/SSU FlatGeobuf files, demo reference labels
+  masks  Tree Cover masks (10/20/30 m) for the selected PSUs
+  cubes  Sentinel-2 L2A Zarr stores (raw chunk files) for the selected PSUs
+
+Examples (from the repo root):
+  uv run python scripts/download_data.py --psus demo --dry-run   # sizes only
+  uv run python scripts/download_data.py --psus demo
+  uv run python scripts/download_data.py --psus 4914 28788 --bands B04 B08 SCL
+  uv run python scripts/download_data.py --psus all --bands B04 B08 B8A B11 B12 SCL
+
+Resumability: every file is written to "<name>.part" and renamed once its size
+matches Content-Length, so an existing file is always complete and is skipped.
+A finished cube is flagged in data/manifests/ and skipped without any request.
+Failures are appended to data/download_failures.txt and the exit code is 1.
+"""
+
+from __future__ import annotations
+
+import argparse
+import html
+import json
+import math
+import os
+import re
+import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+
+import requests
+import truststore
+import yaml
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+# Verify TLS against the operating-system certificate store. Required on machines
+# where an antivirus re-signs HTTPS traffic; equivalent to certifi elsewhere.
+truststore.inject_into_ssl()
+
+REPO = Path(__file__).resolve().parents[1]
+TIMEOUT = (30, 300)  # connect, read (the server can take ~30 s to send the first byte)
+UNITS = {"": 1, "K": 1024, "M": 1024**2, "G": 1024**3}
+# One row of an Apache "Index of" table: href, then size ("540", "26K", "1.4M") or "-" for folders.
+INDEX_ROW = re.compile(
+    r'<a href="([^"?/][^"]*)">[^<]*</a></td><td[^>]*>[^<]*</td><td[^>]*>\s*(?:([0-9.]+)([KMG]?)|-)\s*</td>'
+)
+CHUNK_NAME = re.compile(r"^\d+(\.\d+)*$")
+COORD_ARRAYS = {"time", "x", "y", "spatial_ref"}
+
+_local = threading.local()
+_print_lock = threading.Lock()
+
+
+def log(msg: str) -> None:
+    with _print_lock:
+        print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+
+
+def session() -> requests.Session:
+    """One keep-alive session per thread (connection reuse matters on this server)."""
+    s = getattr(_local, "session", None)
+    if s is None:
+        s = requests.Session()
+        retry = Retry(
+            total=6,
+            backoff_factor=1.5,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=("GET",),
+        )
+        s.mount("https://", HTTPAdapter(max_retries=retry, pool_connections=1, pool_maxsize=1))
+        s.headers["User-Agent"] = "nrt-challenge-mirror/0.1 (python-requests)"
+        _local.session = s
+    return s
+
+
+def list_dir(url: str) -> list[tuple[str, bool, float]]:
+    """Parse an Apache directory index into (name, is_dir, approximate_size_bytes)."""
+    r = session().get(url, timeout=TIMEOUT)
+    r.raise_for_status()
+    entries = []
+    for href, num, unit in INDEX_ROW.findall(r.text):
+        name = html.unescape(href)
+        size = float(num) * UNITS[unit] if num else 0.0
+        entries.append((name.rstrip("/"), name.endswith("/"), size))
+    return entries
+
+
+def fetch(url: str, dest: Path, attempts: int = 4) -> tuple[str, int]:
+    """Download url to dest unless dest already exists. Returns (status, bytes)."""
+    if dest.exists():
+        return "skipped", dest.stat().st_size
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(dest.name + ".part")
+    last_error: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            with session().get(url, stream=True, timeout=TIMEOUT) as r:
+                r.raise_for_status()
+                n = 0
+                with open(tmp, "wb") as f:
+                    for block in r.iter_content(1 << 16):
+                        f.write(block)
+                        n += len(block)
+                expected = r.headers.get("Content-Length")
+                if (
+                    expected is not None
+                    and "Content-Encoding" not in r.headers
+                    and int(expected) != n
+                ):
+                    raise OSError(f"size mismatch: got {n} bytes, expected {expected}")
+            os.replace(tmp, dest)
+            return "downloaded", n
+        except (requests.RequestException, OSError) as e:
+            last_error = e
+            tmp.unlink(missing_ok=True)
+            time.sleep(2.0 * (attempt + 1))
+    raise RuntimeError(f"{url}: {last_error}")
+
+
+def run_tasks(
+    tasks: list[tuple[str, Path]], workers: int, label: str
+) -> tuple[int, int, list[str]]:
+    """Fetch (url, dest) pairs concurrently. Returns (bytes_on_disk, n_downloaded, failures)."""
+    total_bytes = n_new = done = 0
+    failures: list[str] = []
+    t0 = last = time.time()
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(fetch, url, dest): url for url, dest in tasks}
+        for fut in as_completed(futures):
+            done += 1
+            try:
+                status, n = fut.result()
+                total_bytes += n
+                n_new += status == "downloaded"
+            except Exception as e:  # noqa: BLE001 - recorded and reported, run continues
+                failures.append(str(e))
+            now = time.time()
+            if now - last >= 30:
+                rate = done / (now - t0)
+                eta = (len(tasks) - done) / rate if rate > 0 else float("nan")
+                log(
+                    f"{label}: {done}/{len(tasks)} files, {total_bytes / 1e6:.0f} MB, "
+                    f"{rate:.0f} files/s, ETA {eta / 60:.1f} min, {len(failures)} failed"
+                )
+                last = now
+    return total_bytes, n_new, failures
+
+
+def n_expected_chunks(zarray: dict) -> int:
+    return math.prod(math.ceil(s / c) for s, c in zip(zarray["shape"], zarray["chunks"]))
+
+
+def plan_cube(
+    base: str, cfg: dict, data_dir: Path, psu: int, bands: list[str] | None, workers: int
+) -> dict:
+    """List every chunk file of one PSU cube. The plan is cached in data/manifests/."""
+    manifest_path = data_dir / "manifests" / f"PSU_{psu:07d}.json"
+    if manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("bands") == bands:
+            return manifest
+
+    store_rel = cfg["remote"]["s2_cube"].format(psu=psu)
+    store_url = f"{base}{store_rel}/"
+    r = session().get(store_url + ".zmetadata", timeout=TIMEOUT)
+    r.raise_for_status()
+    zmeta = r.json()
+    meta = zmeta["metadata"]
+    arrays = sorted(k[: -len("/.zarray")] for k in meta if k.endswith("/.zarray"))
+    if bands is not None:
+        unknown = set(bands) - {a.split("/")[-1] for a in arrays}
+        if unknown:
+            raise SystemExit(f"PSU {psu}: bands not in cube: {sorted(unknown)}")
+        arrays = [a for a in arrays if a.split("/")[-1] in set(bands) | COORD_ARRAYS]
+
+    def list_array(array: str) -> tuple[str, dict[str, float]]:
+        files = {
+            n: s
+            for n, is_dir, s in list_dir(f"{store_url}{array}/")
+            if not is_dir and CHUNK_NAME.match(n)
+        }
+        return array, files
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        listed = dict(pool.map(list_array, arrays))
+
+    # Keep only metadata of the arrays we mirror, so a band subset can never be
+    # read back as silently fill-valued arrays through the consolidated metadata.
+    # Keys look like ".zgroup" (root), "r10m/.zattrs" (group) or "r10m/B04/.zarray" (array).
+    groups = {a.rsplit("/", 1)[0] for a in arrays if "/" in a}
+
+    def keep(key: str) -> bool:
+        parent = key.rsplit("/", 1)[0] if "/" in key else ""
+        return parent == "" or parent in arrays or parent in groups
+
+    kept_meta = {k: v for k, v in meta.items() if keep(k)}
+    manifest = {
+        "psu": psu,
+        "bands": bands,
+        "store": store_rel,
+        "zmetadata": {**zmeta, "metadata": kept_meta},
+        "arrays": {
+            a: {"expected_chunks": n_expected_chunks(meta[f"{a}/.zarray"]), "files": listed[a]}
+            for a in arrays
+        },
+        "complete": False,
+    }
+    manifest["approx_bytes"] = sum(sum(v["files"].values()) for v in manifest["arrays"].values())
+    manifest["n_files"] = sum(len(v["files"]) for v in manifest["arrays"].values())
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    return manifest
+
+
+def write_cube_metadata(store_dir: Path, manifest: dict) -> None:
+    """Write the hidden Zarr v2 metadata files (.zgroup/.zattrs/.zarray/.zmetadata).
+
+    Apache hides dot-files from its listings; the consolidated .zmetadata holds
+    an exact copy of every one of them, so they are written from it.
+    """
+    zmeta = manifest["zmetadata"]
+    for key, content in zmeta["metadata"].items():
+        path = store_dir / key
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(content, indent=4), encoding="utf-8")
+    (store_dir / ".zmetadata").write_text(json.dumps(zmeta, indent=4), encoding="utf-8")
+
+
+def download_cube(base: str, data_dir: Path, manifest: dict, workers: int) -> tuple[int, list[str]]:
+    psu = manifest["psu"]
+    store_dir = data_dir / Path(manifest["store"]).relative_to("data")
+    store_url = f"{base}{manifest['store']}/"
+    write_cube_metadata(store_dir, manifest)
+    tasks = [
+        (f"{store_url}{array}/{name}", store_dir / array / name)
+        for array, info in manifest["arrays"].items()
+        for name in info["files"]
+    ]
+    nbytes, n_new, failures = run_tasks(tasks, workers, f"PSU {psu:07d}")
+    if not failures:
+        manifest["complete"] = True
+        manifest["bytes"] = nbytes
+        path = data_dir / "manifests" / f"PSU_{psu:07d}.json"
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+    log(
+        f"PSU {psu:07d}: {len(tasks)} files, {nbytes / 1e9:.2f} GB on disk, {n_new} new, {len(failures)} failed"
+    )
+    return nbytes, failures
+
+
+def resolve_psus(arg: list[str], cfg: dict, base: str) -> list[int]:
+    if arg == ["demo"]:
+        return list(cfg["demo_psus"])
+    if arg == ["all"]:
+        names = [n for n, is_dir, _ in list_dir(base + cfg["remote"]["s2_listing"]) if is_dir]
+        return sorted(int(m.group(1)) for n in names if (m := re.fullmatch(r"PSU_(\d+)\.zarr", n)))
+    return [int(a) for a in arg]
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument("--psus", nargs="+", default=["demo"], help='"demo", "all", or PSU ids')
+    ap.add_argument(
+        "--what", nargs="+", default=["aux", "masks", "cubes"], choices=["aux", "masks", "cubes"]
+    )
+    ap.add_argument(
+        "--bands",
+        nargs="+",
+        default=None,
+        help="subset of cube arrays, e.g. B04 B08 SCL (default: all)",
+    )
+    ap.add_argument("--workers", type=int, default=8, help="parallel connections (default 8)")
+    ap.add_argument("--data-dir", type=Path, default=REPO / "data")
+    ap.add_argument("--config", type=Path, default=REPO / "config" / "challenge.yaml")
+    ap.add_argument(
+        "--dry-run", action="store_true", help="list cubes and report approximate sizes only"
+    )
+    args = ap.parse_args()
+
+    cfg = yaml.safe_load(args.config.read_text(encoding="utf-8"))
+    base = cfg["base_url"]
+    remote = cfg["remote"]
+    data_dir: Path = args.data_dir
+    bands = sorted(args.bands) if args.bands else None
+    psus = resolve_psus(args.psus, cfg, base)
+    log(f"{len(psus)} PSU(s): {psus if len(psus) <= 10 else str(psus[:10]) + ' ...'}")
+    failures: list[str] = []
+
+    def local(rel: str) -> Path:
+        # remote "data/x" -> data/x ; remote "demo/x" -> data/demo/x
+        return data_dir / (Path(rel).relative_to("data") if rel.startswith("data/") else Path(rel))
+
+    small: list[tuple[str, Path]] = []
+    if "aux" in args.what:
+        for key in ("psu_boundaries", "demo_psus", "demo_ssus", "copyright"):
+            small.append((base + remote[key], local(remote[key])))
+        for idx in range(cfg["demo_site_count"]):
+            rel = remote["demo_labels"].format(idx=idx)
+            small.append((base + rel, local(rel)))
+    if "masks" in args.what:
+        for res in cfg["mask_resolutions"]:
+            for psu in psus:
+                rel = remote["forest_mask"].format(res=res, psu=psu)
+                small.append((base + rel, local(rel)))
+    if small and not args.dry_run:
+        nbytes, n_new, fails = run_tasks(small, args.workers, "aux/masks")
+        failures += fails
+        log(
+            f"aux/masks: {len(small)} files, {nbytes / 1e6:.1f} MB on disk, {n_new} new, {len(fails)} failed"
+        )
+
+    if "cubes" in args.what:
+        total = 0.0
+        for psu in psus:
+            try:
+                manifest = plan_cube(base, cfg, data_dir, psu, bands, args.workers)
+            except Exception as e:  # noqa: BLE001 - keep going with the other PSUs
+                failures.append(f"PSU {psu}: planning failed: {e}")
+                log(failures[-1])
+                continue
+            absent = {
+                a: v["expected_chunks"] - len(v["files"])
+                for a, v in manifest["arrays"].items()
+                if v["expected_chunks"] != len(v["files"])
+            }
+            log(
+                f"PSU {psu:07d}: {manifest['n_files']} files, ~{manifest['approx_bytes'] / 1e9:.2f} GB"
+                + (f", chunk-count differences vs metadata: {absent}" if absent else "")
+                + (" [already complete]" if manifest.get("complete") else "")
+            )
+            if args.dry_run:
+                total += manifest["approx_bytes"]
+            elif manifest.get("complete"):
+                total += manifest.get("bytes", 0)
+            else:
+                nbytes, fails = download_cube(base, data_dir, manifest, args.workers)
+                total += nbytes
+                failures += fails
+        log(
+            f"cubes total: {total / 1e9:.2f} GB ({'approximate, from listings' if args.dry_run else 'on disk'})"
+        )
+
+    if failures:
+        fail_path = data_dir / "download_failures.txt"
+        fail_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(fail_path, "a", encoding="utf-8") as f:
+            f.write(f"# {time.strftime('%Y-%m-%d %H:%M:%S')}\n" + "\n".join(failures) + "\n")
+        log(f"{len(failures)} failure(s), see {fail_path}. Re-run the same command to retry.")
+        return 1
+    log("done, no failures")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

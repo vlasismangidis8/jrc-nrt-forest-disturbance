@@ -1,0 +1,24 @@
+# Fixed facts about the challenge data layout. Nothing here is a tunable
+# method parameter. Sources: challenge page (Section 4-6), the JRC reference
+# scripts in scripts/jrc_reference/, and the JRC FTP listing (checked 2026-11-16).
+
+base_url: https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/FOREST/NRT/CHALLENGE/
+
+# Remote paths relative to base_url. They are mirrored 1:1 under data/.
+remote:
+  psu_boundaries: data/PSUs_4326.geojson
+  forest_mask: data/forest_masks/{res}/mask_{psu:07d}.tif
+  s2_cube: data/sentinel2/PSU_{psu:07d}.zarr
+  s2_listing: data/sentinel2/
+  demo_psus: demo/demo_PSUs.fgb
+  demo_ssus: demo/demo_SSUs.fgb
+  demo_labels: demo/reference-samples/site_{idx}_labels.json
+  copyright: copyright.txt
+
+mask_resolutions: [10m, 20m, 30m]
+
+# DEMO_PSUS in scripts/jrc_reference/01_run_baseline_iqr.py
+demo_psus: [4914, 242173, 141538, 28788, 172977]
+
+# DEMO_SITE_RANGE in scripts/jrc_reference/02_run_evaluation.py (site_0 .. site_99)
+demo_site_count: 100
