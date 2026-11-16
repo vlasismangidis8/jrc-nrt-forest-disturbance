@@ -1,0 +1,52 @@
+[project]
+name = "jrc-nrt-forest-disturbance"
+version = "0.1.0"
+description = "Submission for the JRC NRT Forest Disturbance Monitoring Intercomparison Challenge"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+# Loose requirements here; exact pins live in uv.lock (committed).
+dependencies = [
+    # JRC reference stack
+    "nrt",
+    "nrt-validate",
+    # data access
+    "xarray",
+    "zarr",
+    "dask[distributed]",
+    "fsspec",
+    "aiohttp",
+    "requests",
+    "truststore",
+    "rioxarray",
+    "rasterio",
+    "geopandas",
+    "pyproj",
+    "netCDF4",
+    # numerics and plotting
+    "numpy",
+    "numba",
+    "scipy",
+    "pandas",
+    "matplotlib",
+    # project plumbing
+    "pyyaml",
+    "tqdm",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[tool.uv]
+# This machine runs Avast HTTPS scanning, which re-signs TLS traffic with a root
+# certificate that only the Windows certificate store trusts. Harmless elsewhere.
+system-certs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+extend-exclude = ["scripts/jrc_reference"]

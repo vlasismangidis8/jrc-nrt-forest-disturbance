@@ -1,0 +1,23 @@
+# Data and generated rasters are never committed
+data/
+outputs/*
+!outputs/.gitkeep
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Dask / numba / misc
+dask-worker-space/
+*.log
+.DS_Store
+Thumbs.db
+
+# Editors and local tooling
+.vscode/
+.idea/
