@@ -13,6 +13,7 @@ A run folder holds the rasters of one method and what was measured on them:
 Usage:
     python scripts/run_reference.py baseline                 # 5 demo PSUs, skips finished ones
     python scripts/run_reference.py baseline --psus 28788 --force
+    python scripts/run_reference.py baseline --psus all      # every cube that has B04 and B08
     python scripts/run_reference.py check     [--run-dir outputs/baseline_iqr]
     python scripts/run_reference.py evaluate  [--run-dir outputs/baseline_iqr]
 """
@@ -23,6 +24,7 @@ import argparse
 import contextlib
 import importlib.util
 import io
+import json
 import os
 import re
 import sys
@@ -107,14 +109,33 @@ class Tee(io.TextIOBase):
         self.stream.flush()
 
 
+BASELINE_ARRAYS = ("r10m/B04", "r10m/B08", "r20m/SCL")
+
+
+def cube_arrays(store: Path) -> set[str] | None:
+    """Arrays of a mirrored cube, or None while the cube is not completely downloaded.
+
+    The mirror writes the Zarr metadata when the last file of a cube has arrived, and
+    lists only the arrays that were mirrored. A cube fetched with the 20 m arrays alone
+    is complete but has no B04 and B08.
+    """
+    meta = store / ".zmetadata"
+    if not meta.exists():
+        return None
+    listed = json.loads(meta.read_text(encoding="utf-8"))["metadata"]
+    return {key.removesuffix("/.zarray") for key in listed if key.endswith("/.zarray")}
+
+
 def run_baseline(args) -> int:
     rasters = args.run_dir / "rasters"
     rasters.mkdir(parents=True, exist_ok=True)
     todo = []
     for psu in args.psus:
-        store = args.data_dir / "sentinel2" / f"PSU_{psu:07d}.zarr"
-        if not (store / ".zmetadata").exists():
+        arrays = cube_arrays(args.data_dir / "sentinel2" / f"PSU_{psu:07d}.zarr")
+        if arrays is None:
             print(f"PSU {psu:07d}: cube is not completely downloaded, skipped")
+        elif missing := [a for a in BASELINE_ARRAYS if a not in arrays]:
+            print(f"PSU {psu:07d}: cube has no {', '.join(missing)} yet, skipped")
         elif (rasters / f"disturbance_date_{psu:07d}.tif").exists() and not args.force:
             print(f"PSU {psu:07d}: raster exists, skipped (use --force to redo)")
         else:
@@ -127,17 +148,34 @@ def run_baseline(args) -> int:
     module.MASKS_URL = (args.data_dir / "forest_masks" / "10m").as_posix()
     module.STORAGE_OPTIONS = None  # the script's value is for HTTP access
     module.OUT_DIR = str(rasters)
-    module.DEMO_PSUS = todo
 
+    # One PSU per call of the reference function, so that a failing PSU does not stop
+    # the others. The function starts its own Dask cluster on every call.
     t0 = time.time()
+    failed = []
     with PeakMemory() as memory:
-        module.run_baseline_pipeline()
+        for psu in todo:
+            module.DEMO_PSUS = [psu]
+            try:
+                module.run_baseline_pipeline()
+            except Exception as error:  # noqa: BLE001 - one bad PSU must not stop the others
+                failed.append(psu)
+                print(f"PSU {psu:07d}: FAILED ({type(error).__name__}: {error})")
+                with contextlib.suppress(Exception):
+                    from dask.distributed import default_client
+
+                    client = default_client()
+                    cluster = client.cluster
+                    client.close()
+                    cluster.close()
     minutes = (time.time() - t0) / 60
     print(
-        f"baseline: {len(todo)} PSU(s) in {minutes:.1f} min, "
+        f"baseline: {len(todo) - len(failed)} PSU(s) in {minutes:.1f} min, "
         f"peak memory {memory.peak / 1e9:.2f} GB (this process and the Dask worker)"
     )
-    return 0
+    if failed:
+        print(f"failed: {failed}")
+    return 1 if failed else 0
 
 
 def strict_check(rasters: Path, masks_dir: Path) -> list[str]:
@@ -224,7 +262,9 @@ def main() -> int:
     sys.stdout.reconfigure(encoding="utf-8")  # the reference scripts print symbols
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("step", choices=["baseline", "check", "evaluate"])
-    ap.add_argument("--psus", nargs="+", type=int, help="PSU ids (default: the 5 demo PSUs)")
+    ap.add_argument(
+        "--psus", nargs="+", help='PSU ids, or "all" for every PSU with a 10 m mask (default: demo)'
+    )
     ap.add_argument("--run-dir", type=Path, default=REPO / "outputs" / "baseline_iqr")
     ap.add_argument("--data-dir", type=Path, default=REPO / "data")
     ap.add_argument("--config", type=Path, default=REPO / "config" / "challenge.yaml")
@@ -236,6 +276,11 @@ def main() -> int:
     if not args.psus:
         cfg = yaml.safe_load(args.config.read_text(encoding="utf-8"))
         args.psus = list(cfg["demo_psus"])
+    elif args.psus == ["all"]:
+        masks = sorted((args.data_dir / "forest_masks" / "10m").glob("mask_*.tif"))
+        args.psus = [int(path.stem.split("_")[1]) for path in masks]
+    else:
+        args.psus = [int(psu) for psu in args.psus]
     args.run_dir.mkdir(parents=True, exist_ok=True)
     return {"baseline": run_baseline, "check": run_check, "evaluate": run_evaluate}[args.step](args)
 

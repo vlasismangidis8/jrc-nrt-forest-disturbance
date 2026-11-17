@@ -1,6 +1,7 @@
 """Tests for scripts/run_reference.py: the wrapper around the JRC conformance checker."""
 
 import importlib.util
+import json
 from argparse import Namespace
 from pathlib import Path
 
@@ -77,6 +78,29 @@ def test_wrongly_named_file_fails(run):
 def test_reference_scripts_are_loaded_without_running_them():
     module = rr.load_reference("00_check_conformance.py")
     assert module.FILENAME_PATTERN.match("disturbance_date_0004914.tif")
+
+
+def write_cube_metadata(store: Path, arrays: list[str]) -> None:
+    store.mkdir(parents=True)
+    listed = {f"{name}/.zarray": {} for name in arrays} | {".zgroup": {}}
+    (store / ".zmetadata").write_text(json.dumps({"metadata": listed}), encoding="utf-8")
+
+
+def test_cube_arrays_lists_what_was_mirrored(tmp_path):
+    assert rr.cube_arrays(tmp_path / "PSU_0000001.zarr") is None  # not downloaded
+    write_cube_metadata(tmp_path / "PSU_0000002.zarr", ["r20m/B8A", "r20m/SCL", "r20m/x"])
+    assert rr.cube_arrays(tmp_path / "PSU_0000002.zarr") == {"r20m/B8A", "r20m/SCL", "r20m/x"}
+
+
+def test_baseline_skips_cubes_without_the_10m_bands(run, capsys):
+    # PSU 1 has only the 20 m arrays, PSU 2 is not there at all: nothing to run, no error
+    write_cube_metadata(run.data_dir / "sentinel2" / "PSU_0000001.zarr", ["r20m/B8A", "r20m/SCL"])
+    run.psus, run.force = [1, 2], False
+    assert rr.run_baseline(run) == 0
+    printed = capsys.readouterr().out
+    assert "PSU 0000001: cube has no r10m/B04, r10m/B08 yet, skipped" in printed
+    assert "PSU 0000002: cube is not completely downloaded, skipped" in printed
+    assert not list((run.run_dir / "rasters").iterdir())
 
 
 # --- scripts/build_archive.py ---------------------------------------------------------------
