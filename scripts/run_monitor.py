@@ -42,6 +42,46 @@ def resolve_psus(arg: list[str], challenge: dict, data_dir: Path) -> list[int]:
     return [int(a) for a in arg]
 
 
+def process_psu(psu: int, config: MonitorConfig, args, run_dir: Path, out: Path, log_path: Path):
+    """Run the monitor on one PSU, write its raster(s) and alarm list; return a summary line."""
+    t0 = time.time()
+    cube = load_cube(psu, args.data_dir, config.arrays, args.cache_dir)
+    t_load = time.time() - t0
+    monitor = run_cube(cube, config)
+    dates = monitor.first_alarm()
+    write_date_raster(out, cube.to_raster(dates), cube.profile)
+    if args.also_from:
+        extra = run_dir / f"rasters_from_{args.also_from}" / out.name
+        early = monitor.first_alarm(start=args.also_from)
+        write_date_raster(extra, cube.to_raster(early), cube.profile)
+
+    days, pixels = monitor.alarms
+    rows, cols = np.nonzero(cube.forest)
+    (run_dir / "alarms").mkdir(exist_ok=True)
+    np.savez_compressed(
+        run_dir / "alarms" / f"PSU_{psu:07d}.npz",
+        day=days,
+        row=rows[pixels].astype(np.int16),
+        col=cols[pixels].astype(np.int16),
+    )
+    seconds = time.time() - t0
+    stop = np.datetime64(config.report_end) + np.timedelta64(1, "D")
+    flagged = int((dates > 0).sum())
+    share = flagged / max(cube.n_pixels, 1)
+    first, last = str(cube.times[0])[:10], str(cube.times[-1])[:10]
+    with open(log_path, "a", newline="") as f:
+        csv.writer(f).writerow(
+            [psu, first, last, int((cube.times < stop).sum()), cube.n_pixels, flagged]
+            + [f"{share:.4f}", f"{seconds:.1f}"]
+        )
+    note = "" if cube.times[-1] >= stop - np.timedelta64(1, "D") else f", CUBE ENDS {last}"
+    before = int((days < epoch_day(config.report_start)).sum())
+    return (
+        f"PSU {psu:07d}: {share:6.1%} of forest flagged ({flagged} px), "
+        f"{before} alarms before the window, {seconds:.0f} s ({t_load:.0f} s loading){note}"
+    )
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--config", type=Path, required=True, help="method configuration (YAML)")
@@ -72,63 +112,28 @@ def main() -> int:
 
     log_path = run_dir / "runs.csv"
     if not log_path.exists():
-        log_path.write_text("psu,dates,forest_px,flagged_px,flagged_share,seconds\n")
+        log_path.write_text(
+            "psu,first_date,last_date,dates,forest_px,flagged_px,flagged_share,seconds\n"
+        )
 
-    n_done = 0
+    n_done, failed = 0, []
     for psu in resolve_psus(args.psus, challenge, args.data_dir):
         out = run_dir / "rasters" / f"disturbance_date_{psu:07d}.tif"
         if out.exists() and not args.force:
             print(f"PSU {psu:07d}: raster exists, skipped")
             continue
-        t0 = time.time()
         try:
-            cube = load_cube(psu, args.data_dir, config.arrays, args.cache_dir)
+            print(process_psu(psu, config, args, run_dir, out, log_path))
+            n_done += 1
         except FileNotFoundError as error:
             print(f"PSU {psu:07d}: skipped ({error})")
-            continue
-        t_load = time.time() - t0
-        monitor = run_cube(cube, config)
-        dates = monitor.first_alarm()
-        write_date_raster(out, cube.to_raster(dates), cube.profile)
-        if args.also_from:
-            extra = run_dir / f"rasters_from_{args.also_from}" / out.name
-            early = monitor.first_alarm(start=args.also_from)
-            write_date_raster(extra, cube.to_raster(early), cube.profile)
-
-        days, pixels = monitor.alarms
-        rows, cols = np.nonzero(cube.forest)
-        (run_dir / "alarms").mkdir(exist_ok=True)
-        np.savez_compressed(
-            run_dir / "alarms" / f"PSU_{psu:07d}.npz",
-            day=days,
-            row=rows[pixels].astype(np.int16),
-            col=cols[pixels].astype(np.int16),
-        )
-        seconds = time.time() - t0
-        n_dates = int(
-            (cube.times < np.datetime64(config.report_end) + np.timedelta64(1, "D")).sum()
-        )
-        flagged = int((dates > 0).sum())
-        with open(log_path, "a", newline="") as f:
-            csv.writer(f).writerow(
-                [
-                    psu,
-                    n_dates,
-                    cube.n_pixels,
-                    flagged,
-                    f"{flagged / cube.n_pixels:.4f}",
-                    f"{seconds:.1f}",
-                ]
-            )
-        before = int((days < epoch_day(config.report_start)).sum())
-        print(
-            f"PSU {psu:07d}: {flagged / cube.n_pixels:6.1%} of forest flagged "
-            f"({flagged} px), {before} alarms before the window, "
-            f"{seconds:.0f} s ({t_load:.0f} s loading)"
-        )
-        n_done += 1
+        except Exception as error:  # noqa: BLE001 - one bad PSU must not stop the others
+            failed.append(psu)
+            print(f"PSU {psu:07d}: FAILED ({type(error).__name__}: {error})")
     print(f"{n_done} PSU(s) processed, rasters in {run_dir / 'rasters'}")
-    return 0
+    if failed:
+        print(f"failed: {failed}")
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

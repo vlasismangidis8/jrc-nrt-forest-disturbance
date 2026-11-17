@@ -77,3 +77,24 @@ def test_wrongly_named_file_fails(run):
 def test_reference_scripts_are_loaded_without_running_them():
     module = rr.load_reference("00_check_conformance.py")
     assert module.FILENAME_PATTERN.match("disturbance_date_0004914.tif")
+
+
+# --- scripts/build_archive.py ---------------------------------------------------------------
+
+_ARCHIVE = importlib.util.spec_from_file_location(
+    "build_archive", Path(__file__).resolve().parents[1] / "scripts" / "build_archive.py"
+)
+build_archive = importlib.util.module_from_spec(_ARCHIVE)
+_ARCHIVE.loader.exec_module(build_archive)
+
+
+def test_completeness_reports_missing_unknown_and_stray_files(tmp_path):
+    for name in ("disturbance_date_0000001.tif", "disturbance_date_0000009.tif", "notes.txt"):
+        (tmp_path / name).write_bytes(b"")
+    problems = build_archive.completeness(tmp_path, {1, 2, 3})
+    assert any("unexpected file notes.txt" in p for p in problems)
+    assert any("2 PSU(s) without a raster: [2, 3]" in p for p in problems)
+    assert any("unknown PSU(s): [9]" in p for p in problems)
+    (tmp_path / "notes.txt").unlink()
+    (tmp_path / "disturbance_date_0000009.tif").unlink()
+    assert build_archive.completeness(tmp_path, {1}) == []

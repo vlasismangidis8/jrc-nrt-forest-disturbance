@@ -6,10 +6,13 @@ Individual entry to the JRC
 **Goal:** a conforming submission (one disturbance-date raster per PSU for 100
 PSUs across Europe) plus a short method summary, before **31 January 2027**.
 
-**Method (planned):** per-pixel recursive state-space model (level + seasonal
-harmonics) updated by a Kalman filter, with a sequential probability ratio
-test on the standardized innovations. Strictly online: a decision at time *t*
-uses only observations at or before *t*.
+**Method:** one recursive state-space model per forest pixel (a seasonal
+profile of the NDMI on 12 knots with a common level), updated by a Kalman
+filter at irregular time steps. Forecast errors are standardised with a
+seasonal variance and fed to a CUSUM, a repeated sequential probability ratio
+test. Strictly online: a decision at time *t* uses only observations at or
+before *t*. The code is in `src/nrtfd/`, the parameters in
+`config/kalman_cusum.yaml`.
 
 The full rule set and all open questions are in
 [docs/challenge_spec.md](docs/challenge_spec.md). Scores and experiments are
@@ -19,14 +22,14 @@ logged in [docs/results_log.md](docs/results_log.md).
 
 | Path | Content |
 | --- | --- |
-| `config/` | Configuration files (data layout, later: method parameters) |
+| `config/` | Configuration files: data layout (`challenge.yaml`), method parameters (`kalman_cusum.yaml`) |
 | `data/` | Mirrored JRC data. Git-ignored |
-| `docs/` | Challenge spec, results log, method summary |
+| `docs/` | Challenge spec, results log, experiment log (`experiments.csv`), method summary |
 | `notebooks/` | Exploration only; nothing the pipeline depends on |
 | `outputs/` | Generated rasters and archives. Git-ignored |
 | `scripts/` | Command-line entry points |
 | `scripts/jrc_reference/` | JRC reference scripts, verbatim from the challenge page |
-| `src/` | The monitoring method (phase 3) |
+| `src/nrtfd/` | The monitoring method: `kalman.py` (filter and test), `monitor.py`, `io.py` |
 | `tests/` | Unit tests, including the no-look-ahead test |
 
 ## Setup
@@ -88,6 +91,31 @@ only replaces their path constants, so that they read the local copy in `data/`
 instead of the JRC server and write to `outputs/baseline_iqr/` instead of
 `~/nrt-challenge-demo`. `check` and `evaluate` take `--run-dir` and work on the
 rasters of any method.
+
+## Kalman + CUSUM monitor
+
+```
+uv run python scripts/run_monitor.py --config config/kalman_cusum.yaml             # 5 demo PSUs
+uv run python scripts/run_monitor.py --config config/kalman_cusum.yaml --psus all  # all downloaded PSUs
+uv run python scripts/run_reference.py check    --run-dir outputs/kalman_cusum
+uv run python scripts/run_reference.py evaluate --run-dir outputs/kalman_cusum
+uv run python scripts/evaluate_run.py --run-dir outputs/kalman_cusum    # scores and every SSU behind them
+uv run python scripts/build_archive.py --run-dir outputs/kalman_cusum --name <archive name>
+```
+
+`run_monitor.py` is resumable: it skips PSUs whose raster exists and PSUs whose
+cube is not completely downloaded. `build_archive.py` writes the `.tar.gz` only
+if all 100 PSUs are present and every check passes.
+
+Parameters are tuned on the demo PSUs only, with `scripts/sweep.py`, which
+appends every variant it tries to `docs/experiments.csv`:
+
+```
+uv run python scripts/sweep.py --base config/kalman_cusum.yaml --grid gate=2.5,3.0 --grid shift=2.5,3.0
+```
+
+Tests (`uv run pytest`) include the no-look-ahead test: alarms up to a date
+must not change when later acquisitions are removed or replaced by noise.
 
 ## Phases
 
