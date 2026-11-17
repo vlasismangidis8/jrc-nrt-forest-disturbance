@@ -10,7 +10,8 @@ PSUs across Europe) plus a short method summary, before **31 January 2027**.
 profile of the NDMI on 12 knots with a common level), updated by a Kalman
 filter at irregular time steps. Forecast errors are standardised with a
 seasonal variance and fed to a CUSUM, a repeated sequential probability ratio
-test. Strictly online: a decision at time *t* uses only observations at or
+test; an alarm needs four anomalous acquisitions, or three strong ones.
+Strictly online: a decision at time *t* uses only observations at or
 before *t*. The code is in `src/nrtfd/`, the parameters in
 `config/kalman_cusum.yaml`.
 
