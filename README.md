@@ -56,10 +56,21 @@ verification is never disabled.
 ```
 uv run python scripts/download_data.py --psus demo --dry-run   # list and size only
 uv run python scripts/download_data.py --psus demo             # 5 demo PSUs
+uv run python scripts/verify_cubes.py                          # completeness and readability
 ```
 
 The downloader mirrors the JRC FTP layout under `data/`, is resumable (re-run
 the same command), and logs failures to `data/download_failures.txt`.
+
+To keep the load on the JRC server low, the demo cubes were mirrored with the
+settings below (one connection, at most 5 requests per second, six arrays),
+which took 9.5 hours:
+
+```
+uv run python scripts/download_data.py --psus demo --what cubes \
+    --bands B04 B08 B8A B11 B12 SCL \
+    --workers 1 --max-rate 5 --stall-cooldown 300 --max-stalls 150
+```
 
 Data: (c) European Union, licensed CC BY 4.0 (see `data/copyright.txt`).
 
