@@ -74,6 +74,21 @@ uv run python scripts/download_data.py --psus demo --what cubes \
 
 Data: (c) European Union, licensed CC BY 4.0 (see `data/copyright.txt`).
 
+## JRC reference pipeline
+
+```
+uv run python scripts/inspect_cube.py --psu 4914     # facts about one cube, one figure
+uv run python scripts/run_reference.py baseline      # IQR baseline, 5 demo PSUs
+uv run python scripts/run_reference.py check         # JRC conformance checker
+uv run python scripts/run_reference.py evaluate      # nrt-validate on the 100 demo SSUs
+```
+
+`run_reference.py` runs the files in `scripts/jrc_reference/` as they are. It
+only replaces their path constants, so that they read the local copy in `data/`
+instead of the JRC server and write to `outputs/baseline_iqr/` instead of
+`~/nrt-challenge-demo`. `check` and `evaluate` take `--run-dir` and work on the
+rasters of any method.
+
 ## Phases
 
 0. Setup and discovery
