@@ -24,7 +24,7 @@ logged in [docs/results_log.md](docs/results_log.md).
 | --- | --- |
 | `config/` | Configuration files: data layout (`challenge.yaml`), method parameters (`kalman_cusum.yaml`) |
 | `data/` | Mirrored JRC data. Git-ignored |
-| `docs/` | Challenge spec, results log, experiment log (`experiments.csv`), method summary |
+| `docs/` | Challenge spec, results log, experiment log (`experiments.csv`), cross-validation folds, method summary |
 | `notebooks/` | Exploration only; nothing the pipeline depends on |
 | `outputs/` | Generated rasters and archives. Git-ignored |
 | `scripts/` | Command-line entry points |
@@ -87,6 +87,7 @@ Data: (c) European Union, licensed CC BY 4.0 (see `data/copyright.txt`).
 ```
 uv run python scripts/inspect_cube.py --psu 4914     # facts about one cube, one figure
 uv run python scripts/run_reference.py baseline      # IQR baseline, 5 demo PSUs
+uv run python scripts/run_reference.py baseline --psus all   # every cube that has B04 and B08
 uv run python scripts/run_reference.py check         # JRC conformance checker
 uv run python scripts/run_reference.py evaluate      # nrt-validate on the 100 demo SSUs
 ```
@@ -105,6 +106,7 @@ uv run python scripts/run_monitor.py --config config/kalman_cusum.yaml --psus al
 uv run python scripts/run_reference.py check    --run-dir outputs/kalman_cusum
 uv run python scripts/run_reference.py evaluate --run-dir outputs/kalman_cusum
 uv run python scripts/evaluate_run.py --run-dir outputs/kalman_cusum    # scores and every SSU behind them
+uv run python scripts/qa_run.py --run-dir outputs/kalman_cusum          # checks that need no labels
 uv run python scripts/build_archive.py --run-dir outputs/kalman_cusum --name <archive name>
 ```
 
@@ -119,6 +121,13 @@ appends every variant it tries to `docs/experiments.csv`:
 uv run python scripts/sweep.py --base config/kalman_cusum.yaml --grid gate=2.5,3.0 --grid shift=2.5,3.0
 ```
 
+`scripts/cross_validate.py` repeats the parameter choice five times, each time
+without the PSU that is then scored (results in `docs/cross_validation.csv`).
+`scripts/qa_run.py` is for the 95 PSUs without labels: it lists, per PSU, the
+share of forest flagged, the months in which the alarms fall, how many flagged
+pixels are scattered single cells, and whether the cube covers the training
+period and the window.
+
 Tests (`uv run pytest`) include the no-look-ahead test: alarms up to a date
 must not change when later acquisitions are removed or replaced by noise.
 
@@ -129,6 +138,7 @@ must not change when later acquisitions are removed or replaced by noise.
 2. Baseline on all 100 PSUs, safety-net submission: waits for the 10 m bands
 3. Kalman + CUSUM monitor, tuned on the demo PSUs only: done on the demo PSUs;
    the run on all 100 PSUs waits for the 20 m arrays
-4. Method summary
+4. Method summary: drafted in [docs/method_summary.md](docs/method_summary.md);
+   the figures for all 100 PSUs follow with the full run
 
 Status as of 2026-11-17. Results: [docs/results_log.md](docs/results_log.md).
