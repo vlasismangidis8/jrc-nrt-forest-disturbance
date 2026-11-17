@@ -75,6 +75,11 @@ uv run python scripts/download_data.py --psus demo --what cubes \
     --workers 1 --max-rate 5 --stall-cooldown 300 --max-stalls 150
 ```
 
+All 100 PSUs are mirrored in two stages with the same settings and
+`--psus all`: first `--bands B8A B11 B12 SCL` (the 20 m arrays, all the Kalman
+monitor needs, about 2 days), then the six arrays above (adds the 10 m bands
+of the JRC baseline, about 3 more days). Progress is in `data/download_all.log`.
+
 Data: (c) European Union, licensed CC BY 4.0 (see `data/copyright.txt`).
 
 ## JRC reference pipeline
@@ -119,8 +124,11 @@ must not change when later acquisitions are removed or replaced by noise.
 
 ## Phases
 
-0. Setup and discovery
-1. JRC baseline (IQR monitor from `nrt`) end to end on the 5 demo PSUs
-2. Baseline on all 100 PSUs: safety-net submission
-3. Kalman + SPRT monitor, tuned on the demo PSUs only
+0. Setup and discovery: done
+1. JRC baseline (IQR monitor from `nrt`) end to end on the 5 demo PSUs: done
+2. Baseline on all 100 PSUs, safety-net submission: waits for the 10 m bands
+3. Kalman + CUSUM monitor, tuned on the demo PSUs only: done on the demo PSUs;
+   the run on all 100 PSUs waits for the 20 m arrays
 4. Method summary
+
+Status as of 2026-11-17. Results: [docs/results_log.md](docs/results_log.md).
