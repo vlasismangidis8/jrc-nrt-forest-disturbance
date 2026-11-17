@@ -136,6 +136,11 @@ def main() -> int:
         metavar="KEY=V1,V2",
         help="values to try for one parameter; repeat for a grid (scl_keep as 4+5,4+5+7)",
     )
+    ap.add_argument(
+        "--one-at-a-time",
+        action="store_true",
+        help="change one parameter at a time instead of trying every combination",
+    )
     ap.add_argument("--note", default="", help="why this sweep is run")
     ap.add_argument("--sample", type=int, default=3000, help="random forest pixels per PSU")
     ap.add_argument("--data-dir", type=Path, default=REPO / "data")
@@ -175,8 +180,11 @@ def main() -> int:
             "changes | official: alarms hits FAbefore FAnone miss | F1@30 @60 @180 UA PA delay"
             " | from 2021: alarms hits FAnone F1@180 | flagged % per PSU"
         )
-        for combo in itertools.product(*choices):
-            changes = dict(zip(keys, combo))
+        if args.one_at_a_time:
+            variants = [{k: v} for k, values in zip(keys, choices) for v in values]
+        else:
+            variants = [dict(zip(keys, combo)) for combo in itertools.product(*choices)]
+        for changes in variants:
             config = dataclasses.replace(base, **changes)
             official, tuning, flagged = run_variant(demo.get(config), demo.refs, config)
             results = []
