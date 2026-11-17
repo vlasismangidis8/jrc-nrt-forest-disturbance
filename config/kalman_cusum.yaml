@@ -27,6 +27,8 @@ detector:
   shift: 3.0              # the test is tuned to a drop of 3 sigma
   threshold: 9.0
   min_anomalies: 4        # no alarm from fewer than 4 anomalous acquisitions
+  strong_drop: 8.0        # a forecast error below -8 sigma is a strong anomaly
+  min_strong_anomalies: 3 # three strong anomalies are enough for an alarm
   min_obs: 30
   min_days: 1095          # three years of training before the first alarm
   rearm_days: 730         # a pixel that changed stays silent for two years

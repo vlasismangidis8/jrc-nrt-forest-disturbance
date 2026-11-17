@@ -53,6 +53,8 @@ class MonitorConfig:
     shift: float  # size of the drop the test is tuned to, in sigma
     threshold: float  # alarm when the log-likelihood ratio reaches this
     min_anomalies: int  # no alarm from fewer anomalous acquisitions than this
+    strong_drop: float  # a forecast error below -strong_drop (in sigma) is a strong anomaly
+    min_strong_anomalies: int  # no alarm from fewer strong anomalies than this
     min_obs: int  # informative errors needed before an alarm may be reported
     min_days: float  # days after a pixel's first observation before reporting
     rearm_days: float  # days after an alarm before the pixel may be reported again
@@ -89,6 +91,8 @@ class MonitorConfig:
             raise ValueError(f"{path}: index must be one of {sorted(INDEX_BANDS)}")
         if flat["basis"] not in ("knots", "harmonics"):
             raise ValueError(f"{path}: basis must be knots or harmonics")
+        if not 1 <= flat["min_strong_anomalies"] <= flat["min_anomalies"]:
+            raise ValueError(f"{path}: min_strong_anomalies must be 1 to min_anomalies")
         return cls(**flat)
 
     @property
@@ -122,6 +126,7 @@ class KalmanCusumMonitor:
             self._prior_diag[0] = c.prior_level_var
             self._prior_common = 0.0
         self._clip = c.threshold / c.min_anomalies
+        self._clip_strong = c.threshold / c.min_strong_anomalies
         self.m = np.zeros((n_pixels, k))
         self.C = np.full((n_pixels, k, k), self._prior_common)
         self.C[:, np.arange(k), np.arange(k)] += self._prior_diag
@@ -214,6 +219,8 @@ class KalmanCusumMonitor:
             c.shift,
             c.threshold,
             self._clip,
+            self._clip_strong,
+            c.strong_drop,
             c.min_obs,
             c.min_days,
             c.rearm_days,

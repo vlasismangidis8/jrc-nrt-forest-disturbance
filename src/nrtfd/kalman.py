@@ -26,7 +26,9 @@ Detection uses the forecast error standardised with the seasonal variance, z_t. 
 CUSUM, written as a repeated sequential probability ratio test of "mean of z is -shift"
 against "mean of z is 0", accumulates the log-likelihood ratio and raises an alarm when
 it reaches a threshold. The contribution of one acquisition is capped, so that no alarm
-can come from fewer than a chosen number of anomalous acquisitions.
+can come from fewer than a chosen number of anomalous acquisitions. The cap has two
+levels: a forecast error beyond `strong_drop` may contribute more, so that a large drop
+needs fewer acquisitions than a small one.
 
 Both functions below see exactly one acquisition. Nothing is stored except the state
 after that acquisition, so a decision at time t cannot depend on later data.
@@ -153,6 +155,8 @@ def update(
     shift,
     threshold,
     clip,
+    clip_strong,
+    strong_drop,
     min_obs,
     min_days,
     rearm_days,
@@ -225,8 +229,9 @@ def update(
 
         if tested:
             u = -shift * zi - half
-            if u > clip:
-                u = clip
+            cap = clip_strong if zi <= -strong_drop else clip
+            if u > cap:
+                u = cap
             elif u < -clip:
                 u = -clip
             total = llr[i] + u

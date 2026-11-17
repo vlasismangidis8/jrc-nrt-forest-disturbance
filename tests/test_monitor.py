@@ -34,6 +34,8 @@ CONFIG = MonitorConfig(
     shift=3.0,
     threshold=9.0,
     min_anomalies=4,
+    strong_drop=8.0,
+    min_strong_anomalies=3,
     min_obs=30,
     min_days=1095,
     rearm_days=730,
@@ -99,14 +101,17 @@ def test_stable_pixels_raise_almost_no_alarms():
     assert (monitor.first_alarm() > 0).mean() < 0.005
 
 
-def test_isolated_outliers_do_not_raise_alarms():
+def test_single_and_paired_outliers_do_not_raise_alarms():
     times, days, values = series(300, seed=2)
-    rng = np.random.default_rng(3)
-    cloud = (rng.random(values.shape) < 0.05) & (days[:, None] >= epoch_day("2021-01-01"))
-    values[cloud] -= 0.4  # 20 sigma, as residual cloud would do
+    start = int(np.searchsorted(days, epoch_day("2021-01-01")))
+    for i in range(values.shape[1]):
+        seen = np.flatnonzero(np.isfinite(values[:, i]))
+        seen = seen[seen >= start]
+        # of every 7 observations of the pixel, two in a row (or one) are outliers
+        hit = np.arange(seen.size) % 7 < 1 + i % 2
+        values[seen[hit], i] -= 0.4  # 20 sigma, as residual cloud would do
     monitor = feed(CONFIG, times, values)
-    # two or three such outliers in a row do happen at 5 %; four in a row almost never
-    assert (monitor.first_alarm() > 0).mean() < 0.02
+    assert (monitor.first_alarm() > 0).mean() < 0.01
 
 
 def test_drop_is_detected_within_min_anomalies_and_never_before_it():
@@ -122,17 +127,30 @@ def test_drop_is_detected_within_min_anomalies_and_never_before_it():
     assert (alarm[10:] == 0).all()
 
 
-def test_alarm_date_is_the_date_of_the_acquisition_that_raised_it():
+@pytest.mark.parametrize(
+    ("drop", "acquisitions"),
+    [(0.4, CONFIG.min_strong_anomalies), (0.12, CONFIG.min_anomalies)],  # 20 and 6 sigma
+)
+def test_alarm_date_is_the_date_of_the_acquisition_that_raised_it(drop, acquisitions):
     times, days, values = series(5, seed=5, missing=0.0)
     t0 = int(np.searchsorted(days, epoch_day("2022-03-01")))
-    values[t0:, 0] -= 0.2
+    values[t0:, 0] -= drop
     monitor = KalmanCusumMonitor(values.shape[1], CONFIG)
     raised_on = None
     for date, day, row in zip(times, days, values):
         if 0 in monitor.monitor(row, date) and raised_on is None:
             raised_on = day
-    assert raised_on == days[t0 + CONFIG.min_anomalies - 1]
+    # a strong drop needs fewer acquisitions than a moderate one, and neither is back-dated
+    assert raised_on == days[t0 + acquisitions - 1]
     assert monitor.first_alarm()[0] == raised_on
+
+
+def test_shortcut_for_strong_drops_can_be_switched_off():
+    times, days, values = series(5, seed=5, missing=0.0)
+    t0 = int(np.searchsorted(days, epoch_day("2022-03-01")))
+    values[t0:, 0] -= 0.4
+    plain = dataclasses.replace(CONFIG, min_strong_anomalies=CONFIG.min_anomalies)
+    assert feed(plain, times, values).first_alarm()[0] == days[t0 + CONFIG.min_anomalies - 1]
 
 
 def test_pixel_disturbed_before_the_window_stays_silent():
