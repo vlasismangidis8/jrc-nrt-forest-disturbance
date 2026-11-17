@@ -1,0 +1,38 @@
+# Configuration of the Kalman filter + CUSUM monitor.
+# Field meanings: src/nrtfd/monitor.py. How the values were chosen: docs/results_log.md.
+# "sigma" is the standard deviation of a pixel's one-step forecast error.
+name: kalman_cusum
+
+input:
+  index: ndmi             # (B8A - B11) / (B8A + B11)
+  scl_keep: [4, 5]        # SCL classes used: vegetation, not vegetated
+
+model:
+  basis: knots            # seasonal profile: index value at evenly spaced days of the year
+  basis_size: 12
+  level_drift: 0.6        # sigma per sqrt(year)
+  seasonal_drift: 0.3
+  prior_level_var: 1.0e+4
+  prior_seasonal_var: 1.0e+3
+  variance_bins: 12       # forecast error variance per month
+  variance_shrink: 2.0
+  var_discount: 0.99
+  restart_weight: 5.0
+  trained_var: 2.5
+  gate: 3.0               # |z| above this: observation not assimilated
+  gate_min_obs: 10
+  max_gated_run: 10
+
+detector:
+  shift: 3.0              # the test is tuned to a drop of 3 sigma
+  threshold: 9.0
+  min_anomalies: 4        # no alarm from fewer than 4 anomalous acquisitions
+  min_obs: 30
+  min_days: 1095          # three years of training before the first alarm
+  rearm_days: 730         # a pixel that changed stays silent for two years
+  retrain_days: 365
+
+window:
+  report_start: 2022-01-01
+  report_end: 2023-05-31
+  event_end: 2022-12-31   # reference events of the evaluation end here
