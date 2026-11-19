@@ -10,7 +10,7 @@ the choice is made without the PSU that is scored:
      PSUs only, and its alarms on the held-out PSU are kept.
   3. The kept alarms of the five folds are scored together with the JRC evaluation code.
 
-The rule is the one the shipped configuration was chosen by (docs/results_log.md): take
+The rule is the one the shipped configuration was chosen by: take
 the variants whose hits minus false alarms in the tuning window (from 2021-01-01) are
 within `--plateau` of the best, and among them the one that flags the smallest share of
 the sampled forest pixels. With a plateau of 0 the flagged share only breaks ties. Both
@@ -154,6 +154,7 @@ def main() -> int:
         folds = pd.DataFrame(rows)
         folds.insert(0, "plateau", plateau)
         folds.insert(0, "grid", "; ".join(args.grid))
+        LOG.parent.mkdir(parents=True, exist_ok=True)
         folds.to_csv(LOG, mode="a", header=not LOG.exists(), index=False)
 
         print(

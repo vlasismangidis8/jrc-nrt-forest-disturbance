@@ -1,5 +1,6 @@
 # Configuration of the Kalman filter + CUSUM monitor.
-# Field meanings: src/nrtfd/monitor.py. How the values were chosen: docs/results_log.md.
+# Field meanings: src/nrtfd/monitor.py. The values were chosen on the 5 demo PSUs with
+# scripts/sweep.py.
 # "sigma" is the standard deviation of a pixel's one-step forecast error.
 name: kalman_cusum
 

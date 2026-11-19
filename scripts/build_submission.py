@@ -40,7 +40,7 @@ import build_archive
 import run_reference
 
 SUMMARY = REPO / "docs" / "method_summary.md"
-STYLE = REPO / "docs" / "method_summary.css"
+STYLE = REPO / "scripts" / "method_summary.css"
 BROWSERS = (
     "msedge",
     "chrome",

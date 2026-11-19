@@ -1,5 +1,8 @@
 # Data and generated rasters are never committed
 data/
+
+# Working notes and experiment logs stay local
+docs/
 outputs/*
 !outputs/.gitkeep
 

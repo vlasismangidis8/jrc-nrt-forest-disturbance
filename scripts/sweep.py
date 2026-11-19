@@ -168,6 +168,7 @@ def main() -> int:
         commit += "+uncommitted"
 
     demo = DemoSeries(args.data_dir, args.cache_dir, psus, args.sample)
+    LOG.parent.mkdir(parents=True, exist_ok=True)
     new_log = not LOG.exists()
     with open(LOG, "a", newline="", encoding="utf-8") as f:
         log = csv.writer(f)

@@ -6,7 +6,7 @@ The archive is only written if
   - the stricter check of `run_reference.py` (exact grid, Int16, dates, mask) finds nothing.
 
 The rasters go into one top-level folder named like the archive. The challenge page does
-not prescribe a layout (docs/challenge_spec.md, question Q5).
+not prescribe a layout.
 
 Usage:
     python scripts/build_archive.py --run-dir outputs/baseline_iqr --name mangidis_iqr_baseline

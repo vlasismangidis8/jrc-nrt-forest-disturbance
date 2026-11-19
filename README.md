@@ -16,17 +16,13 @@ is taken out of the evidence first. Strictly online: a decision at time *t*
 uses only observations at or before *t*. The code is in `src/nrtfd/`, the
 parameters in `config/kalman_cusum.yaml`.
 
-The full rule set and all open questions are in
-[docs/challenge_spec.md](docs/challenge_spec.md). Scores and experiments are
-logged in [docs/results_log.md](docs/results_log.md).
-
 ## Layout
 
 | Path | Content |
 | --- | --- |
 | `config/` | Configuration files: data layout (`challenge.yaml`), method parameters (`kalman_cusum.yaml`) |
 | `data/` | Mirrored JRC data. Git-ignored |
-| `docs/` | Challenge spec, results log, experiment log (`experiments.csv`), cross-validation folds, method summary |
+| `docs/` | Working notes, experiment logs and the method summary. Kept locally, not part of the repository |
 | `notebooks/` | Exploration only; nothing the pipeline depends on |
 | `outputs/` | Generated rasters and archives. Git-ignored |
 | `scripts/` | Command-line entry points |
@@ -117,9 +113,9 @@ uv run python scripts/build_submission.py --run-dir outputs/kalman_cusum --name 
 cube is not completely downloaded. `build_archive.py` writes the `.tar.gz` only
 if all 100 PSUs are present and every check passes. All 100 PSUs take about
 45 minutes on a 4-core laptop. `build_submission.py` unpacks the archive, runs
-the checks again on what comes out, renders the method summary to a one-page
-PDF (needs pandoc and Edge or Chrome) and puts both into `outputs/submission/`.
-Nothing is sent by any script.
+the checks again on what comes out, renders the method summary
+(`docs/method_summary.md`) to a one-page PDF (needs pandoc and Edge or Chrome)
+and puts both into `outputs/submission/`. Nothing is sent by any script.
 
 Parameters are tuned on the demo PSUs only, with `scripts/sweep.py`, which
 appends every variant it tries to `docs/experiments.csv`:
@@ -138,7 +134,7 @@ period and the window.
 Tests (`uv run pytest`) include the no-look-ahead test: alarms up to a date
 must not change when later acquisitions are removed or replaced by noise.
 
-## Phases
+## Status
 
 0. Setup and discovery: done
 1. JRC baseline (IQR monitor from `nrt`) end to end on the 5 demo PSUs: done
@@ -148,11 +144,10 @@ must not change when later acquisitions are removed or replaced by noise.
    `outputs/kalman_cusum/mangidis_kalman_cusum.tar.gz` (with the landscape
    term, the current configuration) and
    `outputs/kalman_cusum_v2/mangidis_kalman_cusum_v2.tar.gz` (without it)
-4. Method summary: [docs/method_summary.md](docs/method_summary.md), one page.
-   The submission (archive with the landscape term and the summary as PDF) is
-   assembled in `outputs/submission/` and is ready to be sent
+4. Method summary: one page. The submission (archive with the landscape term
+   and the summary as PDF) is assembled in `outputs/submission/`
 
-Status as of 2026-11-19. Results: [docs/results_log.md](docs/results_log.md).
+As of 2026-11-19.
 
 ## Licence
 
