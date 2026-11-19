@@ -66,6 +66,7 @@ def latitudes(data_dir: Path) -> dict[int, float]:
 def check_psu(row, run_dir: Path, config: dict) -> tuple[dict, pd.Series]:
     """Label-free figures of one PSU and its alarmed share of the forest per month."""
     psu, forest = int(row.psu), int(row.forest_px)
+    per_forest = 1.0 / forest if forest else 0.0  # a mask can hold no forest pixel at all
     start, end = epoch_day(config["report_start"]), epoch_day(config["report_end"])
     with rasterio.open(run_dir / "rasters" / f"disturbance_date_{psu:07d}.tif") as src:
         dates = src.read(1)
@@ -77,9 +78,9 @@ def check_psu(row, run_dir: Path, config: dict) -> tuple[dict, pd.Series]:
 
     alarms = np.load(run_dir / "alarms" / f"PSU_{psu:07d}.npz")
     days = np.floor(alarms["day"]).astype(np.int64)
-    by_month = pd.Series(month_index(days)).value_counts().sort_index() / forest
+    by_month = pd.Series(month_index(days)).value_counts().sort_index() * per_forest
     reported = month_index(dates[flagged].astype(np.int64))
-    peak = pd.Series(reported).value_counts() / forest
+    peak = pd.Series(reported).value_counts() * per_forest
     rearm = int(config["rearm_days"])
     silenced = np.unique(
         np.stack([alarms["row"], alarms["col"]])[:, (days >= start - rearm) & (days < start)],
@@ -88,11 +89,13 @@ def check_psu(row, run_dir: Path, config: dict) -> tuple[dict, pd.Series]:
 
     first, last = epoch_day(row.first_date), epoch_day(row.last_date)
     notes = []
+    if not forest:
+        notes.append("no forest pixel in the mask")
     if start - first < int(config["min_days"]):
         notes.append(f"training shorter than {config['min_days']} d before the window")
     if last < end:
         notes.append(f"cube ends {row.last_date}")
-    if n_flagged / forest > HIGH_SHARE:
+    if n_flagged * per_forest > HIGH_SHARE:
         notes.append("high flagged share")
     if len(peak) and peak.max() > BURST_SHARE:
         month = str(np.datetime64(int(peak.idxmax()), "M"))
@@ -103,12 +106,12 @@ def check_psu(row, run_dir: Path, config: dict) -> tuple[dict, pd.Series]:
         "last_date": row.last_date,
         "dates": int(row.dates),
         "forest_px": forest,
-        "flagged_share": n_flagged / forest,
-        "share_2022": float((dates[flagged] <= epoch_day("2022-12-31")).sum()) / forest,
-        "share_2023": float((dates[flagged] > epoch_day("2022-12-31")).sum()) / forest,
+        "flagged_share": n_flagged * per_forest,
+        "share_2022": float((dates[flagged] <= epoch_day("2022-12-31")).sum()) * per_forest,
+        "share_2023": float((dates[flagged] > epoch_day("2022-12-31")).sum()) * per_forest,
         "peak_month_share": float(peak.max()) if len(peak) else 0.0,
         "single_cell_share_of_flagged": in_single_cells / n_flagged if n_flagged else 0.0,
-        "silent_at_start_share": silenced / forest,
+        "silent_at_start_share": silenced * per_forest,
         "notes": "; ".join(notes),
     }, by_month
 

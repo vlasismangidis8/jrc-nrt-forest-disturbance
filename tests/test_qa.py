@@ -84,6 +84,19 @@ def test_check_psu_notes_short_training_and_early_end(tmp_path):
     assert summary["flagged_share"] == 0.0
 
 
+def test_check_psu_handles_a_mask_without_forest(tmp_path):
+    make_run(tmp_path, np.zeros((20, 20), "int16"), [])
+    row = SimpleNamespace(
+        psu=7, forest_px=0, first_date="2018-01-05", last_date="2023-07-30", dates=300
+    )
+
+    summary, by_month = qa_run.check_psu(row, tmp_path, CONFIG)
+
+    assert summary["flagged_share"] == 0.0
+    assert summary["notes"] == "no forest pixel in the mask"
+    assert by_month.empty
+
+
 def test_choose_takes_fewest_flagged_inside_the_plateau():
     net = np.array([10, 9, 7, 10])
     flagged = np.array([0.05, 0.01, 0.001, 0.03])
