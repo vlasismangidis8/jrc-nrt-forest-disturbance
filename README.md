@@ -10,10 +10,11 @@ PSUs across Europe) plus a short method summary, before **31 January 2027**.
 profile of the NDMI on 12 knots with a common level), updated by a Kalman
 filter at irregular time steps. Forecast errors are standardised with a
 seasonal variance and fed to a CUSUM, a repeated sequential probability ratio
-test; an alarm needs four anomalous acquisitions, or three strong ones.
-Strictly online: a decision at time *t* uses only observations at or
-before *t*. The code is in `src/nrtfd/`, the parameters in
-`config/kalman_cusum.yaml`.
+test; an alarm needs four anomalous acquisitions, or three strong ones. A
+drop that the forest pixels of a PSU share on an acquisition (a dry summer)
+is taken out of the evidence first. Strictly online: a decision at time *t*
+uses only observations at or before *t*. The code is in `src/nrtfd/`, the
+parameters in `config/kalman_cusum.yaml`.
 
 The full rule set and all open questions are in
 [docs/challenge_spec.md](docs/challenge_spec.md). Scores and experiments are
@@ -113,7 +114,8 @@ uv run python scripts/build_archive.py --run-dir outputs/kalman_cusum --name <ar
 
 `run_monitor.py` is resumable: it skips PSUs whose raster exists and PSUs whose
 cube is not completely downloaded. `build_archive.py` writes the `.tar.gz` only
-if all 100 PSUs are present and every check passes.
+if all 100 PSUs are present and every check passes. All 100 PSUs take about
+45 minutes on a 4-core laptop.
 
 Parameters are tuned on the demo PSUs only, with `scripts/sweep.py`, which
 appends every variant it tries to `docs/experiments.csv`:
@@ -137,9 +139,12 @@ must not change when later acquisitions are removed or replaced by noise.
 0. Setup and discovery: done
 1. JRC baseline (IQR monitor from `nrt`) end to end on the 5 demo PSUs: done
 2. Baseline on all 100 PSUs, safety-net submission: waits for the 10 m bands
-3. Kalman + CUSUM monitor, tuned on the demo PSUs only: done on the demo PSUs;
-   the run on all 100 PSUs waits for the 20 m arrays
-4. Method summary: drafted in [docs/method_summary.md](docs/method_summary.md);
-   the figures for all 100 PSUs follow with the full run
+3. Kalman + CUSUM monitor: done. All 100 PSUs are processed, every raster
+   passes the conformance checks, and two archives are built:
+   `outputs/kalman_cusum/mangidis_kalman_cusum.tar.gz` (with the landscape
+   term, the current configuration) and
+   `outputs/kalman_cusum_v2/mangidis_kalman_cusum_v2.tar.gz` (without it)
+4. Method summary: [docs/method_summary.md](docs/method_summary.md), written
+   for the configuration with the landscape term
 
-Status as of 2026-11-17. Results: [docs/results_log.md](docs/results_log.md).
+Status as of 2026-11-19. Results: [docs/results_log.md](docs/results_log.md).
