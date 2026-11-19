@@ -153,3 +153,10 @@ must not change when later acquisitions are removed or replaced by noise.
    assembled in `outputs/submission/` and is ready to be sent
 
 Status as of 2026-11-19. Results: [docs/results_log.md](docs/results_log.md).
+
+## Licence
+
+The code is released under the MIT licence, see [LICENSE](LICENSE). The
+three scripts in `scripts/jrc_reference/` are copied from the JRC challenge
+page ((c) European Union) and are not covered by it. The data is
+(c) European Union, licensed CC BY 4.0.
