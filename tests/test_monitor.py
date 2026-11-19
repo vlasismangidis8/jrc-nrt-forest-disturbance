@@ -31,6 +31,10 @@ CONFIG = MonitorConfig(
     gate=3.0,
     gate_min_obs=10,
     max_gated_run=10,
+    common_mode=False,
+    common_width=1.0,
+    common_min_pixels=200,
+    common_slack=0.5,
     shift=3.0,
     threshold=9.0,
     min_anomalies=4,
@@ -153,6 +157,59 @@ def test_shortcut_for_strong_drops_can_be_switched_off():
     assert feed(plain, times, values).first_alarm()[0] == days[t0 + CONFIG.min_anomalies - 1]
 
 
+# --- landscape term -----------------------------------------------------------------------
+
+LANDSCAPE = dataclasses.replace(CONFIG, common_mode=True)
+
+
+def test_common_error_is_the_mode_and_survives_a_majority_of_changed_pixels():
+    rng = np.random.default_rng(0)
+    quiet = rng.standard_normal(350)
+    burnt = rng.uniform(-30.0, -8.0, size=650)
+    assert abs(kalman.common_error(np.concatenate([quiet, burnt]), 1.0, 200)) < 0.3
+    assert abs(kalman.common_error(quiet - 2.0, 1.0, 200) + 2.0) < 0.3
+    assert kalman.common_error(quiet[:199] - 2.0, 1.0, 200) == 0.0  # too few pixels
+    assert kalman.common_error(np.zeros(0), 1.0, 0) == 0.0
+
+
+def dry_summer(n_pixels: int, seed: int):
+    """Every pixel is 4 sigma lower from June to September 2022 and then recovers."""
+    times, days, values = series(n_pixels, seed=seed)
+    dry = (days >= epoch_day("2022-06-01")) & (days < epoch_day("2022-10-01"))
+    values[dry] -= 4 * SIGMA
+    return times, days, values, dry
+
+
+def test_drop_shared_by_the_landscape_raises_alarms_only_without_the_common_error():
+    times, _, values, _ = dry_summer(400, seed=10)
+    assert (feed(CONFIG, times, values).first_alarm() > 0).mean() > 0.5
+    assert (feed(LANDSCAPE, times, values).first_alarm() > 0).mean() < 0.02
+
+
+def test_change_during_a_shared_drop_is_still_detected():
+    times, days, values, _ = dry_summer(400, seed=11)
+    t0 = int(np.searchsorted(days, epoch_day("2022-07-01")))
+    values[t0:, :40] -= 0.2
+    alarm = feed(LANDSCAPE, times, values).first_alarm()
+    assert (alarm[:40] >= days[t0]).all()
+    assert (alarm[40:] > 0).mean() < 0.02
+
+
+def test_rise_shared_by_the_landscape_adds_no_evidence_against_the_others():
+    times, days, values = series(400, seed=12)
+    wet = (days >= epoch_day("2022-06-01")) & (days < epoch_day("2022-10-01"))
+    values[np.ix_(wet, np.arange(60, 400))] += 4 * SIGMA  # 85 % of the pixels rise
+    alarm = feed(LANDSCAPE, times, values).first_alarm()
+    assert (alarm[:60] > 0).mean() < 0.02
+
+
+def test_common_error_is_off_below_the_minimum_number_of_pixels():
+    times, _, values, _ = dry_summer(150, seed=13)
+    monitor = feed(LANDSCAPE, times, values)
+    assert (monitor.common_errors[1] == 0.0).all()
+    assert (monitor.first_alarm() == feed(CONFIG, times, values).first_alarm()).all()
+
+
 def test_pixel_disturbed_before_the_window_stays_silent():
     times, days, values = series(20, seed=6)
     t0 = int(np.searchsorted(days, epoch_day("2021-08-10")))
@@ -222,14 +279,19 @@ def stored_cube(seed: int = 0) -> PsuCube:
     return PsuCube(1, times, arrays, dict.fromkeys(arrays, (rows, cols)), forest, {})
 
 
-def alarm_set(cube: PsuCube, until_day: int) -> set:
-    days, pixels = run_cube(cube, CONFIG).alarms
+def alarm_set(cube: PsuCube, until_day: int, config: MonitorConfig = CONFIG) -> set:
+    days, pixels = run_cube(cube, config).alarms
     return {(int(d), int(p)) for d, p in zip(days, pixels) if d <= until_day}
 
 
-def test_alarms_do_not_depend_on_later_acquisitions():
+@pytest.mark.parametrize(
+    "config",
+    [CONFIG, dataclasses.replace(CONFIG, common_mode=True, common_min_pixels=20)],
+    ids=["pixel only", "with the common error"],
+)
+def test_alarms_do_not_depend_on_later_acquisitions(config):
     full = stored_cube()
-    everything = alarm_set(full, 10**6)
+    everything = alarm_set(full, 10**6, config)
     cuts = [epoch_day(d) for d in ("2021-12-31", "2022-06-15", "2022-10-01", "2023-01-20")]
     assert len({d for d, _ in everything}) > len(cuts)  # alarms are spread over time
     rng = np.random.default_rng(9)
@@ -242,14 +304,14 @@ def test_alarms_do_not_depend_on_later_acquisitions():
         short = dataclasses.replace(
             full, times=full.times[:n], arrays={k: v[:n] for k, v in full.arrays.items()}
         )
-        assert alarm_set(short, cut) == expected
+        assert alarm_set(short, cut, config) == expected
 
         # everything after the cut is replaced by noise
         noisy = {k: v.copy() for k, v in full.arrays.items()}
         for name in ("B8A", "B11"):
             noisy[name][n:] = rng.integers(1, 6000, size=noisy[name][n:].shape)
         noisy["SCL"][n:] = rng.choice([4, 5, 9], size=noisy["SCL"][n:].shape)
-        assert alarm_set(dataclasses.replace(full, arrays=noisy), cut) == expected
+        assert alarm_set(dataclasses.replace(full, arrays=noisy), cut, config) == expected
 
 
 def test_nothing_after_the_window_is_read():

@@ -2,8 +2,10 @@
 
 Each variant is the base configuration with some parameters replaced. To keep a variant
 down to seconds, the monitor runs on the demo SSU pixels plus a fixed random sample of
-forest pixels per PSU instead of on whole PSUs. That is exact for the scores, because a
-pixel's result depends on nothing but its own series.
+forest pixels per PSU instead of on whole PSUs. Without `common_mode` that is exact for
+the scores, because a pixel's result depends on nothing but its own series. With it the
+common error of a date is estimated from the sample instead of from all forest pixels,
+so the scores of a whole-PSU run can differ slightly.
 
 For every variant one row is appended to docs/experiments.csv:
   - official window (2022-01-01 on): alarms, hits, kinds of error, UA / PA / F1
@@ -58,6 +60,8 @@ def coerce(config: MonitorConfig, key: str, text: str):
         return int(text)
     if kind == "float":
         return float(text)
+    if kind == "bool":
+        return {"true": True, "false": False}[text.lower()]
     if key == "scl_keep":
         return tuple(int(v) for v in text.split("+"))
     return text

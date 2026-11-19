@@ -30,7 +30,16 @@ can come from fewer than a chosen number of anomalous acquisitions. The cap has 
 levels: a forecast error beyond `strong_drop` may contribute more, so that a large drop
 needs fewer acquisitions than a small one.
 
-Both functions below see exactly one acquisition. Nothing is stored except the state
+A dry summer lowers the index of a whole landscape for weeks without any loss of trees.
+The pixels monitored together (the forest pixels of one PSU) therefore share one more
+quantity per acquisition, the common error: the most frequent standardised forecast
+error among them (`common_error`). Where it is more negative than a slack, the excess
+is taken out of every pixel's evidence, so a drop counts only as far as it goes beyond
+the drop of the landscape. The pixel models themselves are not touched, and a common
+rise changes nothing, so the landscape term can remove evidence but never add any. The
+common error is computed from the acquisition itself, so it needs no later data.
+
+The functions below see exactly one acquisition. Nothing is stored except the state
 after that acquisition, so a decision at time t cannot depend on later data.
 """
 
@@ -120,6 +129,35 @@ def forecast(y, h, day, q_diag, q_common, m, C, t_last, s, sb, nb, b0, b1, w, sh
             z[i] = 0.0
 
 
+@njit(cache=True)
+def _densest_interval(ordered, width):
+    """Mean of the values inside the interval of `width` that holds the most of them."""
+    best, first, j = 0, 0, 0
+    n = ordered.shape[0]
+    for i in range(n):
+        while j < n and ordered[j] - ordered[i] <= width:
+            j += 1
+        if j - i > best:
+            best, first = j - i, i
+    total = 0.0
+    for i in range(first, first + best):
+        total += ordered[i]
+    return total / best
+
+
+def common_error(z: np.ndarray, width: float, min_pixels: int) -> float:
+    """Most frequent standardised forecast error of one acquisition; 0 if `z` is too short.
+
+    It is the mean of the errors inside the densest interval of `width` sigma, an estimate
+    of the mode. Unlike the median it stays with the undisturbed pixels when more than
+    half of the forest changes at once, as long as the changed pixels do not all show
+    the same error.
+    """
+    if z.size < max(min_pixels, 1):
+        return 0.0
+    return float(_densest_interval(np.sort(z), width))
+
+
 @njit(parallel=True, cache=True)
 def update(
     y,
@@ -129,6 +167,7 @@ def update(
     q,
     var,
     z,
+    common_drop,
     m,
     C,
     s,
@@ -164,6 +203,9 @@ def update(
     event_end,
 ):
     """Measurement update, variance update and sequential test for one acquisition.
+
+    common_drop  scalar <= 0: the part of a drop that the landscape shares on this
+                 acquisition and that is not counted as evidence (0: no landscape term)
 
     State per pixel, all updated in place:
     n_eff    discounted number of forecast errors behind the pooled variance s
@@ -228,8 +270,10 @@ def update(
             n_var[i] += 1
 
         if tested:
-            u = -shift * zi - half
-            cap = clip_strong if zi <= -strong_drop else clip
+            # Evidence of a drop: only what goes beyond the drop of the landscape.
+            zt = zi - common_drop
+            u = -shift * zt - half
+            cap = clip_strong if zt <= -strong_drop else clip
             if u > cap:
                 u = cap
             elif u < -clip:

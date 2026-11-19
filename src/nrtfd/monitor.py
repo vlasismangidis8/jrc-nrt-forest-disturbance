@@ -49,6 +49,11 @@ class MonitorConfig:
     gate: float  # observations with |z| above this are not assimilated
     gate_min_obs: int  # informative errors needed before the gate and the test switch on
     max_gated_run: int  # consecutive rejected observations that force a silent restart
+    # landscape: what the pixels monitored together share on one date (see nrtfd.kalman)
+    common_mode: bool  # count a drop only beyond the one the landscape shares on the date
+    common_width: float  # the common error is the densest interval of this width, in sigma
+    common_min_pixels: int  # tested pixels an acquisition needs for a common error
+    common_slack: float  # common drops up to this size (sigma) are ordinary and not removed
     # detector
     shift: float  # size of the drop the test is tuned to, in sigma
     threshold: float  # alarm when the log-likelihood ratio reaches this
@@ -86,6 +91,8 @@ class MonitorConfig:
                 flat[f.name] = int(flat[f.name])
             elif f.type == "str":
                 flat[f.name] = str(flat[f.name])
+            elif f.type == "bool" and not isinstance(flat[f.name], bool):
+                raise ValueError(f"{path}: {f.name} must be true or false")
         flat["scl_keep"] = tuple(int(v) for v in flat["scl_keep"])
         if flat["index"] not in INDEX_BANDS:
             raise ValueError(f"{path}: index must be one of {sorted(INDEX_BANDS)}")
@@ -103,6 +110,9 @@ class MonitorConfig:
 
 class KalmanCusumMonitor:
     """One model per pixel, fed one acquisition at a time in time order.
+
+    The pixels of one monitor are the landscape of the common error: with `common_mode`
+    every call must bring the same set of pixels (the forest pixels of one PSU).
 
     The monitor never holds more than the state after the last acquisition and the list
     of alarms raised so far, so no decision can use later data.
@@ -146,6 +156,8 @@ class KalmanCusumMonitor:
         self._q = np.ones(n_pixels)
         self._var = np.zeros(n_pixels)
         self._fired = np.zeros(n_pixels, np.uint8)
+        self.common = 0.0  # common error of the last call
+        self._common_log: list[tuple[int, float]] = []
         self._last_day = -np.inf
         self._alarm_days: list[np.ndarray] = []
         self._alarm_pixels: list[np.ndarray] = []
@@ -185,6 +197,14 @@ class KalmanCusumMonitor:
             self._var,
             self.z,
         )
+        self.common = 0.0
+        if c.common_mode:
+            # Only forecasts that test the model say something about the date.
+            tested = (
+                np.isfinite(self.z) & (self._q <= c.trained_var) & (self.n_var >= c.gate_min_obs)
+            )
+            self.common = kalman.common_error(self.z[tested], c.common_width, c.common_min_pixels)
+            self._common_log.append((int(np.floor(day)), self.common))
         kalman.update(
             y,
             h,
@@ -193,6 +213,7 @@ class KalmanCusumMonitor:
             self._q,
             self._var,
             self.z,
+            min(self.common + c.common_slack, 0.0),
             self.m,
             self.C,
             self.s,
@@ -240,6 +261,12 @@ class KalmanCusumMonitor:
         if not self._alarm_days:
             return np.zeros(0, np.int32), np.zeros(0, np.intp)
         return np.concatenate(self._alarm_days), np.concatenate(self._alarm_pixels)
+
+    @property
+    def common_errors(self) -> tuple[np.ndarray, np.ndarray]:
+        """Common error of every acquisition so far: (epoch day, value in sigma)."""
+        days = np.array([d for d, _ in self._common_log], np.int32)
+        return days, np.array([v for _, v in self._common_log])
 
     def first_alarm(self, start=None, end=None) -> np.ndarray:
         """Per pixel, the day of its first alarm inside [start, end]; 0 if there is none."""

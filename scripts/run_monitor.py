@@ -63,6 +63,8 @@ def process_psu(psu: int, config: MonitorConfig, args, run_dir: Path, out: Path,
         day=days,
         row=rows[pixels].astype(np.int16),
         col=cols[pixels].astype(np.int16),
+        common_day=monitor.common_errors[0],
+        common_error=monitor.common_errors[1],
     )
     seconds = time.time() - t0
     stop = np.datetime64(config.report_end) + np.timedelta64(1, "D")

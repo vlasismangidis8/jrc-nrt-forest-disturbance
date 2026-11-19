@@ -23,6 +23,12 @@ model:
   gate_min_obs: 10
   max_gated_run: 10
 
+landscape:
+  common_mode: true       # a drop counts only beyond the one shared by the forest pixels of the PSU
+  common_width: 2.0       # the shared error is the densest 2-sigma interval of z on a date
+  common_min_pixels: 200  # tested pixels a date needs for it
+  common_slack: 0.5       # shared drops up to 0.5 sigma are ordinary and stay in the evidence
+
 detector:
   shift: 3.0              # the test is tuned to a drop of 3 sigma
   threshold: 9.0
