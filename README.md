@@ -110,12 +110,16 @@ uv run python scripts/run_reference.py evaluate --run-dir outputs/kalman_cusum
 uv run python scripts/evaluate_run.py --run-dir outputs/kalman_cusum    # scores and every SSU behind them
 uv run python scripts/qa_run.py --run-dir outputs/kalman_cusum          # checks that need no labels
 uv run python scripts/build_archive.py --run-dir outputs/kalman_cusum --name <archive name>
+uv run python scripts/build_submission.py --run-dir outputs/kalman_cusum --name <archive name>
 ```
 
 `run_monitor.py` is resumable: it skips PSUs whose raster exists and PSUs whose
 cube is not completely downloaded. `build_archive.py` writes the `.tar.gz` only
 if all 100 PSUs are present and every check passes. All 100 PSUs take about
-45 minutes on a 4-core laptop.
+45 minutes on a 4-core laptop. `build_submission.py` unpacks the archive, runs
+the checks again on what comes out, renders the method summary to a one-page
+PDF (needs pandoc and Edge or Chrome) and puts both into `outputs/submission/`.
+Nothing is sent by any script.
 
 Parameters are tuned on the demo PSUs only, with `scripts/sweep.py`, which
 appends every variant it tries to `docs/experiments.csv`:
@@ -144,7 +148,8 @@ must not change when later acquisitions are removed or replaced by noise.
    `outputs/kalman_cusum/mangidis_kalman_cusum.tar.gz` (with the landscape
    term, the current configuration) and
    `outputs/kalman_cusum_v2/mangidis_kalman_cusum_v2.tar.gz` (without it)
-4. Method summary: [docs/method_summary.md](docs/method_summary.md), written
-   for the configuration with the landscape term
+4. Method summary: [docs/method_summary.md](docs/method_summary.md), one page.
+   The submission (archive with the landscape term and the summary as PDF) is
+   assembled in `outputs/submission/` and is ready to be sent
 
 Status as of 2026-11-19. Results: [docs/results_log.md](docs/results_log.md).
