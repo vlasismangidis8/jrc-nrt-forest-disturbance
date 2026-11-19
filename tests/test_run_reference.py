@@ -122,3 +122,53 @@ def test_completeness_reports_missing_unknown_and_stray_files(tmp_path):
     (tmp_path / "notes.txt").unlink()
     (tmp_path / "disturbance_date_0000009.tif").unlink()
     assert build_archive.completeness(tmp_path, {1}) == []
+
+
+# --- scripts/build_submission.py ------------------------------------------------------------
+
+_SUBMISSION = importlib.util.spec_from_file_location(
+    "build_submission", Path(__file__).resolve().parents[1] / "scripts" / "build_submission.py"
+)
+build_submission = importlib.util.module_from_spec(_SUBMISSION)
+_SUBMISSION.loader.exec_module(build_submission)
+
+
+def pack(run_dir: Path, name: str, extra: str | None = None) -> Path:
+    """An archive of the run folder's rasters with its checksum file, as build_archive writes."""
+    import hashlib
+    import tarfile
+
+    archive = run_dir / f"{name}.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        for path in sorted((run_dir / "rasters").iterdir()):
+            tar.add(path, arcname=f"{name}/{path.name}")
+        if extra:
+            tar.add(run_dir / "rasters" / "disturbance_date_0000001.tif", arcname=extra)
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    (run_dir / f"{name}.sha256").write_text(f"{digest}  {archive.name}\n", encoding="utf-8")
+    return archive
+
+
+def test_archive_problems_checks_checksum_layout_completeness_and_content(tmp_path):
+    rasters = tmp_path / "rasters"
+    rasters.mkdir()
+    for psu in (1, 2):
+        (rasters / f"disturbance_date_{psu:07d}.tif").write_bytes(bytes([psu]) * 10)
+    archive = pack(tmp_path, "team")
+    assert build_submission.archive_problems(archive, rasters, "team", {1, 2}) == []
+
+    problems = build_submission.archive_problems(archive, rasters, "team", {1, 2, 3})
+    assert problems == ["1 PSU(s) without a raster: [3]"]
+
+    (rasters / "disturbance_date_0000002.tif").write_bytes(b"changed after packing")
+    problems = build_submission.archive_problems(archive, rasters, "team", {1, 2})
+    assert problems == ["team/disturbance_date_0000002.tif differs from the run folder"]
+
+    (tmp_path / "team.sha256").write_text("0000  team.tar.gz\n", encoding="utf-8")
+    assert any(
+        "checksum" in p for p in build_submission.archive_problems(archive, rasters, "team", {1, 2})
+    )
+
+    stray = pack(tmp_path, "other", extra="other/readme.txt")
+    problems = build_submission.archive_problems(stray, rasters, "other", {1, 2})
+    assert any("unexpected entry other/readme.txt" in p for p in problems)
