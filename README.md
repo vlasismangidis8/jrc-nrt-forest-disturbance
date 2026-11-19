@@ -3,8 +3,9 @@
 Individual entry to the JRC
 [Near-Real-Time Forest Disturbance Monitoring Intercomparison Challenge](https://forest.jrc.ec.europa.eu/en/activities/jrc-near-real-time-forest-disturbance-monitoring-challenge/).
 
-**Goal:** a conforming submission (one disturbance-date raster per PSU for 100
-PSUs across Europe) plus a short method summary, before **31 January 2027**.
+**Goal:** detect forest disturbances across Europe from Sentinel-2 time series
+in near real time: soon after the event, with few false alarms, and using only
+the observations available at the moment of each decision.
 
 **Method:** one recursive state-space model per forest pixel (a seasonal
 profile of the NDMI on 12 knots with a common level), updated by a Kalman
