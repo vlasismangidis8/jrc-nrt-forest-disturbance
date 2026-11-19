@@ -1,7 +1,7 @@
-# JRC NRT Forest Disturbance Monitoring Challenge
+# Near-real-time forest disturbance monitoring
 
-Individual entry to the JRC
-[Near-Real-Time Forest Disturbance Monitoring Intercomparison Challenge](https://forest.jrc.ec.europa.eu/en/activities/jrc-near-real-time-forest-disturbance-monitoring-challenge/).
+Online detection of forest disturbances in Sentinel-2 time series, with one
+recursive model per forest pixel and a sequential test on its forecast errors.
 
 **Goal:** detect forest disturbances across Europe from Sentinel-2 time series
 in near real time: soon after the event, with few false alarms, and using only
@@ -12,8 +12,8 @@ profile of the NDMI on 12 knots with a common level), updated by a Kalman
 filter at irregular time steps. Forecast errors are standardised with a
 seasonal variance and fed to a CUSUM, a repeated sequential probability ratio
 test; an alarm needs four anomalous acquisitions, or three strong ones. A
-drop that the forest pixels of a PSU share on an acquisition (a dry summer)
-is taken out of the evidence first. Strictly online: a decision at time *t*
+drop that the forest pixels of one 5 x 5 km tile (a PSU) share on an
+acquisition (a dry summer) is taken out of the evidence first. Strictly online: a decision at time *t*
 uses only observations at or before *t*. The code is in `src/nrtfd/`, the
 parameters in `config/kalman_cusum.yaml`.
 
@@ -156,3 +156,9 @@ The code is released under the MIT licence, see [LICENSE](LICENSE). The
 three scripts in `scripts/jrc_reference/` are copied from the JRC challenge
 page ((c) European Union) and are not covered by it. The data is
 (c) European Union, licensed CC BY 4.0.
+
+## Background
+
+Written for the JRC
+[Near-Real-Time Forest Disturbance Monitoring Intercomparison Challenge](https://forest.jrc.ec.europa.eu/en/activities/jrc-near-real-time-forest-disturbance-monitoring-challenge/).
+The data, the reference scripts and the evaluation protocol come from there.
