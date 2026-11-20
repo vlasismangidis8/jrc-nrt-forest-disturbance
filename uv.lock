@@ -3,10 +3,10 @@ revision = 5
 requires-python = "==3.11.*"
 resolution-markers = [
     "python_full_version >= '3.11.5' and sys_platform == 'win32'",
-    "python_full_version < '3.11.5' and sys_platform == 'win32'",
     "python_full_version >= '3.11.5' and sys_platform == 'emscripten'",
-    "python_full_version < '3.11.5' and sys_platform == 'emscripten'",
     "python_full_version >= '3.11.5' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version < '3.11.5' and sys_platform == 'win32'",
+    "python_full_version < '3.11.5' and sys_platform == 'emscripten'",
     "python_full_version < '3.11.5' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
@@ -832,71 +832,6 @@ wheels = [
 ]
 
 [[package]]
-name = "jrc-nrt-forest-disturbance"
-version = "0.1.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "aiohttp" },
-    { name = "dask", extra = ["distributed"] },
-    { name = "fsspec" },
-    { name = "geopandas" },
-    { name = "matplotlib" },
-    { name = "netcdf4" },
-    { name = "nrt" },
-    { name = "nrt-validate" },
-    { name = "numba" },
-    { name = "numpy" },
-    { name = "pandas" },
-    { name = "pyproj" },
-    { name = "pyyaml" },
-    { name = "rasterio" },
-    { name = "requests" },
-    { name = "rioxarray" },
-    { name = "scipy" },
-    { name = "tqdm" },
-    { name = "truststore" },
-    { name = "xarray" },
-    { name = "zarr" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiohttp" },
-    { name = "dask", extras = ["distributed"] },
-    { name = "fsspec" },
-    { name = "geopandas" },
-    { name = "matplotlib" },
-    { name = "netcdf4" },
-    { name = "nrt" },
-    { name = "nrt-validate" },
-    { name = "numba" },
-    { name = "numpy" },
-    { name = "pandas" },
-    { name = "pyproj" },
-    { name = "pyyaml" },
-    { name = "rasterio" },
-    { name = "requests" },
-    { name = "rioxarray" },
-    { name = "scipy" },
-    { name = "tqdm" },
-    { name = "truststore" },
-    { name = "xarray" },
-    { name = "zarr" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest" },
-    { name = "ruff" },
-]
-
-[[package]]
 name = "json5"
 version = "0.17.3"
 source = { registry = "https://pypi.org/simple" }
@@ -1415,6 +1350,71 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/9f/37/0add0181b1e73a394d54df03286d8c1b9f319e8bb7a71ac123962ff6a125/nrt_data-0.0.2.tar.gz", hash = "sha256:cdbc493e683b3a321b92d7a4178d12a9a50b4f66e26ed096bdafcd472f460619", size = 82949, upload-time = "2026-02-02T15:12:11.125Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d6/f7/02a87a411cfe86b3162d43a498b9d12854f229b9c2b8dc8ad548e87ee746/nrt_data-0.0.2-py3-none-any.whl", hash = "sha256:d6605fd41a328e18b36df5b9defa9715467a1959a699bf419504d07a8b4a3249", size = 39322, upload-time = "2026-02-02T15:12:09.476Z" },
+]
+
+[[package]]
+name = "nrt-forest-disturbance"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "dask", extra = ["distributed"] },
+    { name = "fsspec" },
+    { name = "geopandas" },
+    { name = "matplotlib" },
+    { name = "netcdf4" },
+    { name = "nrt" },
+    { name = "nrt-validate" },
+    { name = "numba" },
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "pyproj" },
+    { name = "pyyaml" },
+    { name = "rasterio" },
+    { name = "requests" },
+    { name = "rioxarray" },
+    { name = "scipy" },
+    { name = "tqdm" },
+    { name = "truststore" },
+    { name = "xarray" },
+    { name = "zarr" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiohttp" },
+    { name = "dask", extras = ["distributed"] },
+    { name = "fsspec" },
+    { name = "geopandas" },
+    { name = "matplotlib" },
+    { name = "netcdf4" },
+    { name = "nrt" },
+    { name = "nrt-validate" },
+    { name = "numba" },
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "pyproj" },
+    { name = "pyyaml" },
+    { name = "rasterio" },
+    { name = "requests" },
+    { name = "rioxarray" },
+    { name = "scipy" },
+    { name = "tqdm" },
+    { name = "truststore" },
+    { name = "xarray" },
+    { name = "zarr" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest" },
+    { name = "ruff" },
 ]
 
 [[package]]

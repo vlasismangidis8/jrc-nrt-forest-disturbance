@@ -1,7 +1,7 @@
 [project]
-name = "jrc-nrt-forest-disturbance"
+name = "nrt-forest-disturbance"
 version = "0.1.0"
-description = "Submission for the JRC NRT Forest Disturbance Monitoring Intercomparison Challenge"
+description = "Near-real-time detection of forest disturbances in Sentinel-2 time series"
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
 # Loose requirements here; exact pins live in uv.lock (committed).
